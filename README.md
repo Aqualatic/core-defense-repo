@@ -47,6 +47,13 @@ To retest, create a room in a normal window and join in incognito. Start the mat
 - Player markers and move-preview have been removed.
 - `balance_sim_v1.js` was renamed to `balance_sim.js`. Tower-killed Swarms now award the parent's 18 bounty and split; automatic splits still do not pay the parent bounty. The balance grid was not rerun or tuned.
 
+## Hosting notes
+Render was chosen because this game needs a persistent Node.js process running Express, Socket.IO WebSockets, and an authoritative 30 Hz in-memory game loop. One Render Web Service serves both the browser client and the game server.
+
+ChatGPT Sites runs server code on Cloudflare Workers. Netlify Functions handle requests/events in ephemeral runtimes, returning responses for web requests. Neither runs this persistent Node/Socket.IO architecture unchanged. Cloudflare supports WebSockets, but adapting room coordination and the simulation lifecycle would require a different server design. This project keeps its existing server architecture on Render.
+
+Use one instance: rooms and reconnect reservations live in that process's memory. A restart, redeploy, or free-instance sleep loses them. Reconnect restores a player only while the original room exists and the 120-second window has not expired.
+
 ## Render deployment
 Deployment is manual; this project has not been published by the assistant.
 
@@ -77,12 +84,31 @@ Deployment is manual; this project has not been published by the assistant.
 8. Keep this deployment at one instance. Room state is in memory: restarts, redeploys and free-instance sleep lose rooms and tokens. A reconnect token restores a disconnected client only while the original server process and reservation survive.
 9. Before a demo, open the URL a minute or two early. Free services idle after 15 minutes without inbound traffic and can take roughly a minute to wake. Connected clients send a 30-second keep-alive while the page is running. This is not an uptime guarantee, especially when phones suspend the page.
 
+### Build and Node version check
+Verified on Node 24.22.1 with npm 11.9.0 in a clean temporary copy: `NODE_ENV=production` and the exact build command `npm ci --omit=dev` successfully install from the included version-3 lockfile without modifying it. `npm start` then serves `/health` (`ok`), the game page, shared config, and the Socket.IO browser client. The development-only `socket.io-client` package is omitted as expected; the server serves the browser bundle from its production `socket.io` dependency.
+
+Both `package.json` and the root entry in `package-lock.json` declare `engines.node` as `>=22 <25`. Render's `NODE_VERSION=24` selects Node 24.x within that range. These settings are compatible; no package or lockfile change is needed. Commit both files. Automated tests need development dependencies and should be run locally with `npm ci` followed by `npm test`, not as the production start command.
+
+### Test the public URL on two devices
+1. Wait for Render to show Live. Open the public HTTPS URL with `/health` appended on both devices; expect `ok`.
+2. On your phone, turn Wi-Fi OFF, leave cellular data ON, and use landscape orientation. Open the base public URL (without player/room query parameters), enter a nickname, and create a room. The phone should be Spawner and host.
+3. On your computer using Wi-Fi or Ethernet, open the same base public URL, enter a different nickname, and join with the room code. The computer should be Defender. Both screens should list exactly two players.
+4. Start the match from the phone. Both screens show the 10-second countdown with frozen money/time. During play, the phone says Attack the Core and offers Runner controls; the computer says Defend the Core and has no Runner controls.
+5. Tap top gate 1 on the phone. Expect an immediate cost of 20, a 1.5-second cooldown, a 2-second warning on both devices, and then the same Runner moving toward the Core. With no other spawns, Core HP drops from 100 to 97 roughly 5.1 seconds after the accepted spawn; the Runner disappears on both screens. Small display delays from cellular latency are normal. Towers are not part of milestone 2.
+6. While the match is active, refresh the phone's current page, keeping its player-specific URL and browser storage. Within the 120-second reconnect window it should restore the same player ID, nickname, Spawner role and action controls. Money, cooldown, Core HP and time continue; the roster stays at two. Host ownership can transfer to the connected computer and stays there after the phone returns.
+7. Refresh the computer's current page too. It should restore the Defender identity, Defender heading and no Runner controls. Avoid refreshing during the countdown for this test: a countdown disconnect deliberately returns the room to the lobby.
+
+### Test a sleeping free instance
+Close all game tabs and leave the service without inbound requests or WebSocket traffic for more than 15 minutes. When you reopen the public URL, Render may display a loading page while it starts the service; this normally takes about a minute. Wait for `/health` to return `ok`, then open the base game URL. If an old player URL cannot reconnect, create a new room and have the other device join its new code. The old room, match and reconnect reservation were in memory and cannot survive the sleep/restart. The 120-second reconnect window does not restore a restarted server's memory. An active page's keep-alive helps while a demo is running, but a suspended phone page cannot guarantee it.
+
 References (checked October 26, 2026):
 - https://render.com/docs/deploy-node-express-app
 - https://render.com/docs/web-services
 - https://render.com/docs/health-checks
 - https://render.com/docs/node-version
 - https://render.com/docs/free
+- https://render.com/docs/websocket
+- https://docs.netlify.com/build/functions/overview/
 
 ## Verification
 `npm test` covers countdown/income boundaries, all eight approach paths, exact warning/cooldown timing, Core collisions, role/cost/cap validation, fixed N, timer/Core tie ordering, two-client state agreement, authenticated reconnect, host transfer, spectator joining, rate limits, reconnect expiry and snapshot cadence. Client regression tests execute the shipped client against test DOM/transport boundaries to check role/phase changes, controls, refresh/reconnect ordering and expired/moved sessions. These checks do not verify browser layout; use the manual window tests above for visual confirmation.
