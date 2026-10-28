@@ -18,7 +18,7 @@
       codeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ', reconnectMs: 120000, finishedExpiryMs: 900000 },
     match: { countdownSeconds: 10, durationSeconds: 300, coreHP: 100, liveEnemyCap: 80 },
     network: { tickHz: 30, snapshotHz: 15, interpolationMs: 100, snapshotBuffer: 60,
-      spawnRequestsPerSecond: 4, generalRequestsPerSecond: 10, rateWindowMs: 1000,
+      spawnRequestsPerSecond: 4, placementRequestsPerSecond: 4, generalRequestsPerSecond: 10, rateWindowMs: 1000,
       keepAliveMs: 30000, requestTimeoutMs: 5000, maxPayloadBytes: 4096 },
     server: { defaultPort: 3000, bindHost: '0.0.0.0' },
     economy: { defenderStart: 150, defenderStartPerExtra: 10, defenderIncome: 5,
@@ -37,6 +37,7 @@
     },
     upkeep: { cost: 1, interval: 10 }, repair: { cost: 60, heal: 5, cooldown: 20 },
     ui: { gridSpacing: 60, gateRadius: 18, gateHitRadius: 40, enemyRadius: 10,
-      coreRadius: 18, coreGlowRadius: 60, snapRadius: 7 }
+      coreRadius: 18, coreGlowRadius: 60, snapRadius: 7, towerRadius: 13,
+      shotFlashSeconds: 0.15, healthBarWidth: 24, healthBarHeight: 4, spendFeedLimit: 8 }
   };
 });

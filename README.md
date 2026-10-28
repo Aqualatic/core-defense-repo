@@ -1,5 +1,5 @@
-# Core Defense — milestone 2
-This version includes rooms, stable player identities, reconnect, automatic roles, a host countdown, and the server-authoritative Runner loop. Towers, selling, Repair, Surge, scores and rematches are later milestones. Balance values remain provisional.
+# Core Defense — milestone 3
+This version adds Defender Shooter placement, automatic targeting and damage, kill bounties into one shared treasury, and a shared spend feed. It retains rooms, stable identities, reconnect, automatic roles, countdown and the server-authoritative Runner loop. Other towers/enemies, selling, upkeep, Repair, Surge, score UI and rematches are later milestones. Balance values remain provisional; no balance simulation was rerun or tuned.
 
 ## Run locally
 Install Node.js 22 or 24 (Node 24 is recommended). Extract this project and open a terminal in the folder containing package.json.
@@ -14,16 +14,17 @@ To use another port, set the PORT environment variable before starting.
 Run `npm test` for deterministic game-loop and two-client Socket.IO tests.
 
 ## Two-window test
-1. Window A: open the base URL, enter a nickname, create a room. It shows Spawner and host.
-2. Window B: open the BASE URL separately (do not duplicate A's player URL), enter a second nickname, join the room code. It shows Defender. Both show the same roster and map.
-3. Window A: click Start match. Both show a 10-second countdown; money and the five-minute match timer remain frozen during it.
-4. When playing, click top gate 1 (or gate button 1) in A. The server immediately charges 20; the global Runner cooldown is 1.5 seconds. Both clients show a Runner warning for 2 seconds, then a pink Runner traveling straight toward the Core at 120 logical pixels/second.
-5. About 5.1 seconds after the accepted click, that Runner reaches the Core center, disappears, and Core HP changes from 100 to 97. The Spawner gains 5 money. Passive income is 4.5/sec with one Defender.
-6. Click another gate during cooldown: no additional purchase occurs. Runner controls are shown only to the Spawner; the server also rejects forged Defender spawn requests.
-7. Refresh A during play. The same player ID, nickname, role, money, cooldown and match state return; there is no duplicate player. Refresh B too. Each window has its own player ID in the URL and its token in localStorage. Host transfers to a connected player when the current host disconnects; reconnecting does not steal host rights back.
-8. For a visible offline test, disconnect one window's network briefly, then restore it within 120 seconds. The other window shows that player as reconnecting. After 120 seconds, the reservation/token expires. The match continues during a playing-phase disconnect.
-9. A disconnect during countdown returns the room to the lobby so the host can restart when both sides are connected. New arrivals during countdown/play are spectators and cannot change N.
-10. To test a fresh match after the simple finished status, open the base URL and create another room. Play Again is a later milestone.
+1. Stop the old server, start this version, and reload both pages. Window A: in a normal browser window, open http://localhost:3000, enter a nickname and create a room. It shows Spawner and host.
+2. Window B: in incognito, open the BASE URL separately (do not copy A's player URL), enter a second nickname and join the room code. It shows Defender. Both show the same roster, map, Core HP, timer and **Shared Treasury**. Keep incognito open throughout the refresh test.
+3. A: click Start match. Both show a 10-second countdown with frozen money and five-minute match timer. Confirm Placement is disabled; placement and spawning open only after the countdown.
+4. B: tap/click near the point at the top of the ring (point 13, directly below gate 1). The nearest empty point highlights with its range circle. Selection alone does not spend. Click **Confirm Placement · 50**. A cyan Shooter appears for its owner, lavender on A; both see one tower, the 50-credit deduction and `YourName placed a Shooter -50` in the spend feed. Treasury starts at 150 with one Defender and grows at 5/sec, so it will already be above 100 if you take a moment to place.
+5. A: click top gate 1. The server charges 20 immediately, starts its 1.5-second Runner cooldown and shows a 2-second warning to both clients. The Runner appears, approaches the Shooter, flashes a shot line and loses HP from 20 to 8. A second shot about half a second later kills it. It disappears before reaching the Core; Core HP stays 100. Both treasuries receive the same +6 bounty on top of passive income. The kill occurs about 2.83 seconds after the accepted spawn with this exact placement.
+6. With no other towers placed, send a Runner from bottom gate 3. The top Shooter cannot reach that approach; the Runner disappears at the Core and HP drops to 97 about 5.1 seconds after the accepted spawn. A Core hit still pays the Spawner +5.
+7. B: select other points and buy Shooters. Each costs 50 from the same treasury. Below 50, Confirm Placement is grayed out with an insufficient-funds message. Tapping an occupied point selects the nearest empty point instead. All 16 points are available regardless of Defender count. The server rejects occupied points, invalid IDs, wrong roles and insufficient funds without charging.
+8. Refresh B during active play using its current URL. Expect the same Defender identity, owned cyan towers, spend feed, treasury and room; no duplicate player or second charge. Towers continue firing during a disconnect. A temporary selection is cleared, so tap a point again before the next placement. Refresh A too: Spawner identity/controls return, and both still agree. Host transfers when its current owner disconnects; reconnecting does not steal host rights back.
+9. For an offline test, disconnect one window briefly, then restore it within 120 seconds. The other shows that player as reconnecting. After 120 seconds, the reservation/token expires. A countdown disconnect returns the room to the lobby; a playing-phase disconnect does not pause the match. New arrivals during countdown/play are spectators and cannot place or spawn.
+10. Optional shared-spend race test: before starting a new room, join a second Defender from another browser profile. Both select the same empty point and confirm together. Exactly one purchase succeeds, one tower appears and only 50 is deducted; the other request is rejected. With two Defenders, starting treasury is 160 and team income is still 5/sec.
+11. To test a fresh match after the simple finished status, open the base URL and create another room. Play Again is a later milestone.
 
 Browser storage must be allowed for refresh recovery. Use the same origin consistently (localhost and 127.0.0.1 have different storage). A copied player URL without its local token cannot reclaim that player.
 
@@ -32,7 +33,8 @@ Browser storage must be allowed for refresh recovery. Use the same origin consis
 - Spectators receive viewing guidance instead of Defender instructions. Lobby guidance follows host ownership; countdown hints follow the player's role.
 - Runner controls and purchase status appear only for the Spawner. The status no longer says Ready in the lobby, countdown, finished match, while disconnected, or without enough money.
 - Refresh/reconnect shows connection recovery guidance until identity confirmation. Expired rooms and sessions opened elsewhere replace stale action hints and disable controls immediately.
-- Core HP, timer, explicitly labeled Spawner money, gate warnings, player roster, and server-provided match result are shared information and remain visible to everyone.
+- Core HP, timer, explicitly labeled Spawner money, Shared Treasury, spend feed, gate warnings, player roster, and server-provided match result are shared information and remain visible to everyone.
+- Milestone 3 adds Defender-only placement controls and role/phase-aware placement hints, including countdown, affordability, pending requests and reconnect. Spawners and spectators never receive a Confirm Placement control.
 
 To retest, create a room in a normal window and join in incognito. Start the match and compare the headings and hints; refresh each window during play and verify the role-specific text returns. A third window joining mid-match should show Spectator, Watching the match, and no Runner controls. Role selection is still automatic in this milestone; each snapshot updates the UI from the current server-assigned role.
 
@@ -40,7 +42,11 @@ To retest, create a room in a normal window and join in incognito. Start the mat
 - `shared/config.js` supplies the map dimensions, Core position, ring, all 16 snap points, all 8 gates, reconnect window, game timings, Runner/economy numbers, rates, and rendering dimensions.
 - The server and `balance_sim.js` require it; the browser loads the same file at /shared/config.js.
 - Simulation: 30 fixed ticks/sec. Periodic full snapshots: 15/sec, plus immediate lobby/connection updates. Rendering interpolates with a 100ms buffer, freezing on gaps rather than predicting outcomes.
-- Spawn attempts are limited to 4/sec/player (including rejected attempts); ordinary requests are limited to 10/sec/connection. Spawn limits survive reconnect.
+- Spawn and placement attempts each have a separate 4/sec/player limit (including rejected attempts); ordinary requests are limited to 10/sec/connection. Both player limits survive reconnect.
+- Defenders select one of the 16 fixed points and confirm. The server selects the position from shared config, checks role/phase/occupancy/funds and charges the shared treasury atomically. No position, cost or ownership supplied by a client is trusted.
+- Shooter: cost 50, range 120, damage 12, two shots/sec. It fires on the first eligible tick, then at its configured interval, targeting the closest-to-Core enemy among those in range. Equal distances use the lower enemy ID. Damage is instant; shot lines are visual only. Enemies still ignore towers. Tick order retains movement/Core collisions before tower fire and the match-end check.
+- Shared treasury starts at 150 + 10 per extra Defender (N fixed at start), earns 5/sec during play and receives 6 per Runner kill. The killing tower retains its owner's kill and actual damage credit; overkill is not counted as extra damage. Towers keep working while the owner is offline. Upkeep and selling are not enabled in this milestone.
+- The latest eight purchases appear in the shared spend feed. Nicknames remain textContent, including in this feed. New placement limits, feed size and shot visuals are in shared/config.js; gameplay numbers were not rebalanced.
 - Money is charged and cooldown starts when the server accepts the click. A warning reserves an enemy slot; pending plus active enemies cannot exceed 80.
 - Health endpoint: /health. Server binds 0.0.0.0 and process.env.PORT.
 - Nicknames are rendered with textContent. Reconnect tokens never appear in shared snapshots.
@@ -69,7 +75,7 @@ The source is prepared for split deployment. Live publication and signed-out bro
    ```sh
    git init
    git add .
-   git commit -m "Implement Core Defense milestone 2"
+   git commit -m "Implement Core Defense milestone 3"
    git branch -M main
    git remote add origin https://github.com/YOUR_USERNAME/core-defense.git
    git push -u origin main
@@ -116,9 +122,9 @@ Both `package.json` and the root entry in `package-lock.json` declare `engines.n
 2. On your phone, turn Wi-Fi OFF, leave cellular data ON, and use landscape orientation. Open the actual **Sites** base URL in a private browser session not signed into ChatGPT. It must show the game lobby without a sign-in or permission wall. Enter a nickname and create a room. The phone should be Spawner and host.
 3. On your computer using Wi-Fi or Ethernet, open that same **Sites** base URL in an incognito window not signed into ChatGPT. Enter a different nickname and join with the room code. The computer should be Defender. Both screens should list exactly two players.
 4. Start the match from the phone. Both screens show the 10-second countdown with frozen money/time. During play, the phone says Attack the Core and offers Runner controls; the computer says Defend the Core and has no Runner controls.
-5. Tap top gate 1 on the phone. Expect an immediate cost of 20, a 1.5-second cooldown, a 2-second warning on both devices, and then the same Runner moving toward the Core. With no other spawns, Core HP drops from 100 to 97 roughly 5.1 seconds after the accepted spawn; the Runner disappears on both screens. Small display delays from cellular latency are normal. Towers are not part of milestone 2.
+5. On the computer, select the top ring point and confirm a Shooter for 50. Both screens show it and the same spend feed entry. Tap top gate 1 on the phone: expect cost 20, cooldown 1.5 seconds, a 2-second warning, and then a Runner. The Shooter kills it in two hits before the Core, paying 6 into the shared treasury. Then use the unguarded bottom gate to check a Core hit. Small display delays from cellular latency are normal.
 6. While the match is active, refresh the phone's current page, keeping its player-specific URL and browser storage. Within the 120-second reconnect window it should restore the same player ID, nickname, Spawner role and action controls. Money, cooldown, Core HP and time continue; the roster stays at two. Host ownership can transfer to the connected computer and stays there after the phone returns.
-7. Refresh the computer's current page too. It should restore the Defender identity, Defender heading and no Runner controls. Avoid refreshing during the countdown for this test: a countdown disconnect deliberately returns the room to the lobby.
+7. Refresh the computer's current page too. It should restore the Defender identity, Defender heading, owned towers, shared treasury and placement controls, with no Runner controls. Avoid refreshing during the countdown for this test: a countdown disconnect deliberately returns the room to the lobby.
 8. If desktop browser developer tools are available, inspect Network -> WS: the connection should target the Render host and upgrade with status 101. The document and `/vendor/socket.io.min.js` should come from Sites. No third-party cookies are required.
 9. Keep the private windows open during refresh tests. Closing all private windows clears their storage. Successful access in signed-out sessions on both networks confirms public access for the tested Sites URL; that cannot be claimed before the actual deployment is checked.
 
@@ -140,6 +146,10 @@ References (checked October 26, 2026):
 - https://docs.netlify.com/build/functions/overview/
 
 ## Verification
-The Plan B update passes 21 automated tests, including a static frontend on one HTTP origin connecting to a different game-server origin, cookie-free reconnect, CORS, rejected origins and session-upgrade checks. A clean `npm ci --omit=dev` and `npm start` production smoke test serves the checked-in browser bundle without development dependencies and leaves the lockfile unchanged. Live Sites/Render publication and signed-out device testing remain pending the actual URLs.
+Fresh milestone 3 verification: 34 automated tests pass. A clean production install and `npm start` smoke test also passed with two real Socket.IO clients, the automatic countdown/game loop, Shooter combat, bounty arithmetic and refresh-style reconnect. Node syntax checks pass. The package and lockfile both use version 0.3.0 with unchanged dependencies and Node engine range.
+
+The browser executable could not be downloaded in this environment, so an actual browser layout/touch run remains a manual check. Client tests exercise DOM events and canvas drawing calls through test boundaries; they are not a substitute for the normal/incognito visual test above.
+
+Milestone 3 adds checks for placement validation, all 16 slots, simultaneous purchases, exact-income affordability, targeting/range/fire cadence, kill bounty deduplication, ownership and combat during reconnect, plus role-specific selection/confirmation UI. The existing Plan B origin, static asset and reconnect checks remain included. Live Sites/Render publication and signed-out device testing remain pending the actual URLs.
 
 `npm test` covers countdown/income boundaries, all eight approach paths, exact warning/cooldown timing, Core collisions, role/cost/cap validation, fixed N, timer/Core tie ordering, two-client state agreement, authenticated reconnect, host transfer, spectator joining, rate limits, reconnect expiry and snapshot cadence. Client regression tests execute the shipped client against test DOM/transport boundaries to check role/phase changes, controls, refresh/reconnect ordering and expired/moved sessions. These checks do not verify browser layout; use the manual window tests above for visual confirmation.

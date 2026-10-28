@@ -34,18 +34,26 @@
           <span>Core <strong id="coreHP"></strong></span>
           <span>Time <strong id="timer"></strong></span>
           <span>Spawner money <strong id="money"></strong></span>
+          <span>Shared Treasury <strong id="treasury"></strong></span>
           <span id="connection" role="status">Connecting…</span>
         </div>
         <p id="actionError" class="error" role="status"></p>
         <div class="game-layout">
           <div class="canvas-wrap">
-            <canvas id="gameCanvas" aria-label="Shared arena with eight numbered spawn gates"></canvas>
+            <canvas id="gameCanvas" aria-label="Shared arena with eight numbered spawn gates and sixteen tower snap points"></canvas>
           </div>
           <aside>
             <button id="startButton" class="primary">Start match</button>
             <p id="hint" class="small"></p>
             <p id="runnerLabel"></p>
             <div id="gateButtons" class="gate-buttons" aria-label="Spawn Runner at gate"></div>
+            <div id="placementControls" class="hidden">
+              <p id="shooterLabel"></p>
+              <p id="placementStatus" class="small" role="status"></p>
+              <button id="confirmPlacement" class="primary" disabled>Confirm Placement</button>
+            </div>
+            <h3>Spend feed</h3>
+            <ul id="spendFeed" aria-label="Shared treasury spending"></ul>
             <h3>Players</h3>
             <ul id="playerList"></ul>
             <p class="small">Share the room code. Open the base URL in another window to join as a different player.</p>

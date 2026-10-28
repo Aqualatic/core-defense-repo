@@ -146,3 +146,58 @@ test('an existing polling session cannot bypass the origin check on later reques
     ws.once('error', resolve);
   });
 });
+
+test('simultaneous Defenders purchase one slot once; towers fight while their owner reconnects', async t => {
+  const f = await setup(t), a = await f.client(), b = await f.client(), c = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  const sam = await request(b, 'join-room', { code: host.code, nickname: 'Sam' });
+  const lee = await request(c, 'join-room', { code: host.code, nickname: 'Lee' });
+  await request(a, 'start-match');
+  assert.match((await request(b, 'place-tower', { snapId: 12 })).error, /begin/);
+  f.tick(300);
+  assert.match((await request(a, 'place-tower', { snapId: 12 })).error, /Only/);
+  const results = await Promise.all([request(b, 'place-tower', { snapId: 12, ownerId: host.playerId, cost: 0 }),
+    request(c, 'place-tower', { snapId: 12 })]);
+  assert.equal(results.filter(r => r.ok).length, 1);
+  assert.match(results.find(r => !r.ok).error, /occupied/);
+  const owner = results[0].ok ? sam : lee, ownerSocket = results[0].ok ? b : c;
+  const sa = event(a, 'room-state', s => s.game.towers.length === 1);
+  const sb = event(b, 'room-state', s => s.game.towers.length === 1);
+  f.tick(2);
+  const [one, two] = await Promise.all([sa, sb]); assert.deepEqual(one, two);
+  assert.ok(Math.abs(one.game.treasury - (110 + 2 / 30 * 5)) < 1e-8);
+  assert.equal(one.game.towers[0].ownerId, owner.playerId);
+  assert.equal(one.game.spendFeed.length, 1);
+  await request(a, 'spawn-runner', { gateId: 0 });
+  const offline = event(a, 'room-state', s => s.players.some(p => !p.connected));
+  ownerSocket.disconnect(); await offline;
+  const kill = event(a, 'room-state', s => s.game.towers[0].kills === 1);
+  f.tick(86);
+  const fought = await kill;
+  assert.equal(fought.game.coreHP, 100); assert.equal(fought.game.enemies.length, 0);
+  assert.equal(fought.game.towers[0].damageDealt, 20);
+  const refreshed = await f.client(), restored = event(refreshed, 'room-state');
+  assert.equal((await request(refreshed, 'resume-room', owner)).playerId, owner.playerId);
+  const s = await restored;
+  assert.equal(s.players.length, 3); assert.equal(s.game.towers[0].ownerId, owner.playerId);
+  assert.equal(s.game.towers[0].kills, 1); assert.equal(s.game.spendFeed.length, 1);
+  assert.ok(Math.abs(s.game.treasury - (110 + 88 / 30 * 5 + 6)) < 1e-8);
+  assert.match((await request(refreshed, 'place-tower', { snapId: 12 })).error, /occupied/);
+});
+
+test('placement validates shared funds and counts rejected attempts across reconnect', async t => {
+  const f = await setup(t), a = await f.client(), b = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  const defender = await request(b, 'join-room', { code: host.code, nickname: 'Build' });
+  await request(a, 'start-match'); f.tick(300);
+  for (const snapId of [0, 4, 12]) assert.equal((await request(b, 'place-tower', { snapId })).ok, true);
+  assert.match((await request(b, 'place-tower', { snapId: 8 })).error, /Treasury/);
+  const offline = event(a, 'room-state', s => s.players.some(p => !p.connected));
+  b.disconnect(); await offline;
+  const refreshed = await f.client(); await request(refreshed, 'resume-room', defender);
+  assert.match((await request(refreshed, 'place-tower', { snapId: 8 })).error, /rate limit/);
+  const g = f.app.rooms.get(host.code).game;
+  assert.equal(g.towers.length, 3); assert.equal(g.spendFeed.length, 3); assert.equal(g.treasury, 0);
+  const spectator = await f.client(); await request(spectator, 'join-room', { code: host.code, nickname: 'Late' });
+  assert.match((await request(spectator, 'place-tower', { snapId: 8 })).error, /Only/);
+});

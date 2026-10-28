@@ -115,7 +115,7 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       const role = room.game.phase !== 'lobby' ? 'Spectator'
         : [...room.players.values()].some(p => p.role === 'Spawner') ? 'Defender' : 'Spawner';
       const player = { playerId: randomUUID(), token: randomBytes(32).toString('hex'),
-        nickname: nickname(room, name), role, requests: [], connected: false };
+        nickname: nickname(room, name), role, requests: [], placementRequests: [], connected: false };
       room.players.set(player.playerId, player);
       const credentials = attach(socket, room, player);
       broadcast(room); return credentials;
@@ -151,6 +151,13 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       const { room, player } = membership(socket);
       if (!rate(player.requests, C.network.spawnRequestsPerSecond)) throw new Error('Spawn rate limit: wait a moment.');
       const error = Game.spawnRunner(room.game, player.role, payload.gateId);
+      if (error) throw new Error(error);
+      return {};
+    });
+    action('place-tower', payload => {
+      const { room, player } = membership(socket);
+      if (!rate(player.placementRequests, C.network.placementRequestsPerSecond)) throw new Error('Placement rate limit: wait a moment.');
+      const error = Game.placeShooter(room.game, player, payload.snapId);
       if (error) throw new Error(error);
       return {};
     });

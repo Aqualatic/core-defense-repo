@@ -8,6 +8,12 @@ const C = require('../shared/config');
 // Run the shipped client with DOM/transport boundaries supplied by the test.
 // This exercises snapshot and reconnect ordering without a browser dependency.
 function client({ refreshed = false, serverUrl = '', pageOrigin = 'http://localhost:3000' } = {}) {
+  const painted = [], ctx = {};
+  for (const name of ['beginPath', 'arc', 'fill', 'fillRect', 'moveTo', 'lineTo', 'stroke', 'setLineDash', 'fillText']) {
+    ctx[name] = (...args) => painted.push({ name, args });
+  }
+  ctx.createRadialGradient = () => ({ addColorStop() {} });
+  let animationFrame;
   function element() {
     const classes = new Set();
     let text = '';
@@ -17,7 +23,8 @@ function client({ refreshed = false, serverUrl = '', pageOrigin = 'http://localh
         contains: name => classes.has(name), toggle(name, on) { if (on) classes.add(name); else classes.delete(name); } },
       append(...children) { this.children.push(...children); },
       replaceChildren(...children) { this.children = children; },
-      addEventListener() {}, getContext: () => ({}) };
+      addEventListener(name, handler) { this['on' + name] = handler; },
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 400 }), getContext: () => ctx };
   }
   const html = fs.readFileSync(path.join(__dirname, '../public/index.html'), 'utf8');
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(m => [m[1], element()]));
@@ -36,7 +43,7 @@ function client({ refreshed = false, serverUrl = '', pageOrigin = 'http://localh
       search: refreshed ? '?room=ABCD&player=me' : '', pathname: '/' },
     history: { replaceState() {} }, localStorage: { getItem: key => stored.get(key) || null,
       setItem: (key, value) => stored.set(key, value) },
-    performance: { now: () => 100 }, setInterval() {}, requestAnimationFrame() {} });
+    performance: { now: () => 100 }, setInterval() {}, requestAnimationFrame(fn) { animationFrame = fn; } });
   vm.runInContext(fs.readFileSync(path.join(__dirname, '../public/client.js'), 'utf8'), context);
   function acknowledge(name) {
     const request = sent.findLast(r => r.name === name);
@@ -46,13 +53,15 @@ function client({ refreshed = false, serverUrl = '', pageOrigin = 'http://localh
   if (!refreshed) {
     elements.nickname.value = 'Sam'; elements.createButton.onclick(); acknowledge('create-room');
   }
-  return { elements, socket, sent, stored, connection, acknowledge, event: (name, value) => handlers[name](value),
+  return { elements, socket, sent, stored, connection, acknowledge, painted, draw: () => animationFrame(),
+    event: (name, value) => handlers[name](value),
     snapshot(role, phase = 'playing', options = {}) {
       handlers['room-state']({ code: 'ABCD', serverNow: 100, hostId: options.hostId || 'me',
         players: [{ playerId: 'me', role, nickname: 'Sam', connected: true },
           { playerId: 'other', role: role === 'Spawner' ? 'Defender' : 'Spawner', nickname: 'Alex', connected: true }],
         game: { phase, coreHP: 97, remaining: 295, countdown: 10, money: 150, runnerCooldown: 0,
-          reason: 'Defenders win: the Core survived.', enemies: [], warnings: [], ...options.game } });
+          reason: 'Defenders win: the Core survived.', enemies: [], warnings: [],
+          treasury: 150, towers: [], spendFeed: [], ...options.game } });
     } };
 }
 
@@ -65,7 +74,7 @@ test('active heading, hints and spawn controls follow the current role on every 
   assert.ok(e.gateButtons.children.every(b => !b.disabled));
   f.snapshot('Defender');
   assert.equal(e.phaseLabel.textContent, 'Defend the Core');
-  assert.match(e.hint.textContent, /Towers arrive in the next milestone/);
+  assert.match(e.hint.textContent, /Confirm Placement/);
   assert.equal(e.gateButtons.classList.contains('hidden'), true);
   assert.equal(e.runnerLabel.classList.contains('hidden'), true);
   assert.ok(e.gateButtons.children.every(b => b.disabled));
@@ -77,6 +86,74 @@ test('active heading, hints and spawn controls follow the current role on every 
   assert.equal(e.roleLabel.textContent, 'Your role: Spawner');
   assert.equal(e.runnerLabel.classList.contains('hidden'), false);
   assert.equal(e.gateButtons.classList.contains('hidden'), false);
+});
+
+test('canvas draws selection range, owned towers, authoritative shot lines and damaged Runner health', () => {
+  const f = client();
+  f.snapshot('Defender', 'playing', { game: { matchTime: 3,
+    enemies: [{ id: 8, type: 'Runner', x: 600, y: 90, hp: 8 }],
+    towers: [{ snapId: 12, x: 600, y: 190, type: 'Shooter', ownerId: 'me',
+      lastShot: { tick: 86, targetId: 8, x: 600, y: 86 } }] } });
+  f.elements.gameCanvas.onpointerdown({ clientX: 405, clientY: 200 });
+  f.draw();
+  assert.ok(f.painted.some(p => p.name === 'arc' && p.args[0] === 810 && p.args[2] === 120));
+  assert.ok(f.painted.some(p => p.name === 'lineTo' && p.args[0] === 600 && p.args[1] === 86));
+  assert.ok(f.painted.some(p => p.name === 'fillRect' && Math.abs(p.args[2] - 9.6) < 1e-8));
+});
+
+test('Defender taps the nearest empty point, then confirms; selecting alone never spends', () => {
+  const f = client(), e = f.elements;
+  f.snapshot('Defender');
+  assert.equal(e.placementControls.classList.contains('hidden'), false);
+  assert.equal(e.confirmPlacement.disabled, true);
+  // Canvas is rendered at half logical size: tap near the top ring point.
+  e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+  assert.match(e.placementStatus.textContent, /13/);
+  assert.equal(f.sent.filter(r => r.name === 'place-tower').length, 0);
+  assert.equal(e.confirmPlacement.disabled, false);
+  e.confirmPlacement.onclick(); e.confirmPlacement.onclick();
+  assert.equal(f.sent.filter(r => r.name === 'place-tower').length, 1);
+  assert.equal(f.sent.find(r => r.name === 'place-tower').payload.snapId, 12);
+  assert.equal(e.confirmPlacement.disabled, true);
+  f.acknowledge('place-tower'); assert.equal(e.confirmPlacement.disabled, true);
+  f.snapshot('Defender', 'playing', { game: { towers: [{ snapId: 12 }] } });
+  e.gameCanvas.onpointerdown({ clientX: 301, clientY: 95 });
+  e.confirmPlacement.onclick();
+  assert.notEqual(f.sent.findLast(r => r.name === 'place-tower').payload.snapId, 12);
+});
+
+test('placement controls, affordability and selection follow role/phase/reconnect and occupied snapshots', () => {
+  const f = client(), e = f.elements;
+  for (const role of ['Spawner', 'Defender', 'Spectator']) {
+    for (const phase of ['lobby', 'countdown', 'playing', 'finished']) {
+      f.snapshot(role, phase);
+      e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+      assert.equal(e.placementControls.classList.contains('hidden'), role !== 'Defender');
+      assert.equal(e.confirmPlacement.disabled, !(role === 'Defender' && phase === 'playing'));
+    }
+  }
+  f.snapshot('Defender', 'playing', { game: { treasury: 49 } });
+  e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+  assert.equal(e.confirmPlacement.disabled, true); assert.match(e.placementStatus.textContent, /Not enough/);
+  f.snapshot('Defender'); assert.equal(e.confirmPlacement.disabled, false);
+  f.snapshot('Defender', 'playing', { game: { towers: [{ snapId: 12 }] } });
+  assert.equal(e.confirmPlacement.disabled, true);
+  e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+  f.socket.disconnect(); assert.equal(e.confirmPlacement.disabled, true);
+  f.socket.connect(); f.snapshot('Defender'); assert.equal(e.confirmPlacement.disabled, true);
+  f.acknowledge('resume-room');
+  assert.equal(e.confirmPlacement.disabled, true); // A refresh/reconnect needs a fresh selection.
+  assert.match(e.hint.textContent, /Confirm Placement/);
+});
+
+test('shared treasury and spend feed update for every role, with nicknames as literal text', () => {
+  const f = client(), e = f.elements;
+  for (const role of ['Spawner', 'Defender', 'Spectator']) {
+    f.snapshot(role, 'playing', { game: { treasury: 106.8,
+      spendFeed: [{ nickname: '<b>Sam</b>', towerType: 'Shooter', cost: 50 }] } });
+    assert.equal(e.treasury.textContent, '106');
+    assert.equal(e.spendFeed.children[0].textContent, '<b>Sam</b> placed a Shooter -50');
+  }
 });
 
 test('one server URL selects same-origin or remote WebSockets; refresh uses frontend storage tokens', () => {
