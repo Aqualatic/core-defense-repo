@@ -1,5 +1,7 @@
 const C = window.CoreDefenseConfig;
-const socket = io({ autoConnect: false });
+const socket = io(window.CoreDefenseClientConfig.serverUrl || undefined, {
+  autoConnect: false, transports: ['websocket'], withCredentials: false
+});
 const $ = id => document.getElementById(id);
 const canvas = $('gameCanvas'), ctx = canvas.getContext('2d');
 canvas.width = C.map.width; canvas.height = C.map.height;

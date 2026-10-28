@@ -14,12 +14,13 @@ function event(socket, name, predicate = () => true) {
 const request = (socket, name, data = {}) => socket.timeout(3000).emitWithAck(name, data);
 async function setup(t) {
   let clock = 1000000;
-  const app = createServer({ autoTick: false, now: () => clock });
+  const app = createServer({ autoTick: false, now: () => clock,
+    allowedOrigins: 'http://localhost:3000,https://core-defense.example' });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + app.server.address().port, clients = [];
   t.after(async () => { clients.forEach(c => c.disconnect()); await app.close(); });
-  async function client() {
-    const c = connect(url, { transports: ['websocket'], autoConnect: false, reconnection: false });
+  async function client(origin = 'http://localhost:3000') {
+    const c = connect(url, { transports: ['websocket'], extraHeaders: { Origin: origin }, autoConnect: false, reconnection: false });
     clients.push(c); const ready = event(c, 'connect'); c.connect(); await ready; return c;
   }
   function tick(count) { for (let i = 0; i < count; i++) { clock += 1000 / C.network.tickHz; app.tick(); } }
@@ -87,4 +88,61 @@ test('snapshot loop emits 15 states in 30 ticks', async t => {
   const last = event(a, 'room-state', s => s.game.tick === 30);
   f.tick(30); await last;
   assert.equal(received.length, 15);
+});
+
+test('allowed cross-origin clients share a room and restore the same player without cookies', async t => {
+  const f = await setup(t), a = await f.client('https://core-defense.example'), b = await f.client();
+  const created = await request(a, 'create-room', { nickname: 'Phone' });
+  await request(b, 'join-room', { nickname: 'Computer', code: created.code });
+  await request(a, 'start-match'); f.tick(300);
+  await request(a, 'spawn-runner', { gateId: 0 });
+  const offline = event(b, 'room-state', s => s.players.some(p => !p.connected));
+  a.disconnect(); await offline;
+  const reconnected = await f.client('https://core-defense.example');
+  const restored = event(reconnected, 'room-state');
+  const resumed = await request(reconnected, 'resume-room', created);
+  assert.equal(resumed.playerId, created.playerId);
+  const s = await restored;
+  assert.equal(s.players.length, 2);
+  assert.equal(s.players.find(p => p.playerId === resumed.playerId).role, 'Spawner');
+  assert.equal(s.game.money, 130);
+  assert.equal(s.game.runnerCooldown, 1.5);
+});
+
+test('CORS and all Socket.IO handshakes reject unlisted, missing and null origins', async t => {
+  const f = await setup(t), endpoint = f.url + '/socket.io/?EIO=4&transport=polling';
+  const response = await fetch(endpoint, { method: 'OPTIONS', headers: {
+    Origin: 'https://core-defense.example', 'Access-Control-Request-Method': 'POST' } });
+  assert.equal(response.status, 204);
+  assert.equal(response.headers.get('access-control-allow-origin'), 'https://core-defense.example');
+  assert.equal(response.headers.get('access-control-allow-credentials'), null);
+  for (const origin of ['https://other.example', 'https://core-defense.example.evil.test', 'null', undefined]) {
+    const headers = origin ? { Origin: origin } : {};
+    const denied = await fetch(endpoint, { headers });
+    assert.ok(denied.status >= 400);
+    assert.equal(denied.headers.get('access-control-allow-origin'), null);
+    const socket = connect(f.url, { transports: ['websocket'], extraHeaders: headers,
+      autoConnect: false, reconnection: false });
+    t.after(() => socket.disconnect());
+    const rejected = event(socket, 'connect_error'); socket.connect(); await rejected;
+    assert.equal(socket.connected, false);
+  }
+  assert.equal(await (await fetch(f.url + '/health')).text(), 'ok');
+});
+
+test('an existing polling session cannot bypass the origin check on later requests or upgrade', async t => {
+  const f = await setup(t), endpoint = f.url + '/socket.io/?EIO=4&transport=polling';
+  const handshake = await fetch(endpoint, { headers: { Origin: 'https://core-defense.example' } });
+  assert.equal(handshake.headers.get('access-control-allow-origin'), 'https://core-defense.example');
+  const sid = JSON.parse((await handshake.text()).slice(1)).sid;
+  const denied = await fetch(endpoint + '&sid=' + sid, { headers: { Origin: 'https://other.example' } });
+  assert.ok(denied.status >= 400);
+  const { WebSocket } = require('ws');
+  const ws = new WebSocket(f.url.replace('http:', 'ws:') + '/socket.io/?EIO=4&transport=websocket&sid=' + sid,
+    { origin: 'https://other.example' });
+  t.after(() => ws.terminate());
+  await new Promise((resolve, reject) => {
+    ws.once('open', () => reject(new Error('Disallowed upgrade was accepted')));
+    ws.once('error', resolve);
+  });
 });

@@ -7,7 +7,7 @@ const C = require('../shared/config');
 
 // Run the shipped client with DOM/transport boundaries supplied by the test.
 // This exercises snapshot and reconnect ordering without a browser dependency.
-function client({ refreshed = false } = {}) {
+function client({ refreshed = false, serverUrl = '', pageOrigin = 'http://localhost:3000' } = {}) {
   function element() {
     const classes = new Set();
     let text = '';
@@ -28,10 +28,11 @@ function client({ refreshed = false } = {}) {
     timeout() { return this; }, emit(name, payload, ack) { sent.push({ name, payload, ack }); },
     connect() { this.connected = true; handlers.connect(); },
     disconnect() { this.connected = false; handlers.disconnect(); } };
-  const context = vm.createContext({ window: { CoreDefenseConfig: C },
+  let connection;
+  const context = vm.createContext({ window: { CoreDefenseConfig: C, CoreDefenseClientConfig: { serverUrl } },
     document: { getElementById: id => elements[id], createElement: element, body: element() },
-    io: () => socket, URL, URLSearchParams,
-    location: { href: 'http://localhost:3000/' + (refreshed ? '?room=ABCD&player=me' : ''),
+    io: (url, options) => { connection = { url, options }; return socket; }, URL, URLSearchParams,
+    location: { href: pageOrigin + '/' + (refreshed ? '?room=ABCD&player=me' : ''),
       search: refreshed ? '?room=ABCD&player=me' : '', pathname: '/' },
     history: { replaceState() {} }, localStorage: { getItem: key => stored.get(key) || null,
       setItem: (key, value) => stored.set(key, value) },
@@ -45,7 +46,7 @@ function client({ refreshed = false } = {}) {
   if (!refreshed) {
     elements.nickname.value = 'Sam'; elements.createButton.onclick(); acknowledge('create-room');
   }
-  return { elements, socket, sent, acknowledge, event: (name, value) => handlers[name](value),
+  return { elements, socket, sent, stored, connection, acknowledge, event: (name, value) => handlers[name](value),
     snapshot(role, phase = 'playing', options = {}) {
       handlers['room-state']({ code: 'ABCD', serverNow: 100, hostId: options.hostId || 'me',
         players: [{ playerId: 'me', role, nickname: 'Sam', connected: true },
@@ -76,6 +77,22 @@ test('active heading, hints and spawn controls follow the current role on every 
   assert.equal(e.roleLabel.textContent, 'Your role: Spawner');
   assert.equal(e.runnerLabel.classList.contains('hidden'), false);
   assert.equal(e.gateButtons.classList.contains('hidden'), false);
+});
+
+test('one server URL selects same-origin or remote WebSockets; refresh uses frontend storage tokens', () => {
+  const local = client();
+  assert.equal(local.connection.url, undefined);
+  const hosted = client({ refreshed: true, serverUrl: 'https://game-server.example', pageOrigin: 'https://core-defense.example' });
+  assert.equal(hosted.connection.url, 'https://game-server.example');
+  assert.deepEqual(Array.from(hosted.connection.options.transports), ['websocket']);
+  assert.equal(hosted.connection.options.withCredentials, false);
+  const resume = hosted.sent.find(r => r.name === 'resume-room');
+  assert.equal(resume.payload.playerId, 'me');
+  assert.equal(resume.payload.reconnectToken, 'test-token');
+  hosted.snapshot('Spawner'); hosted.acknowledge('resume-room');
+  assert.equal(hosted.elements.roleLabel.textContent, 'Your role: Spawner');
+  const saved = JSON.parse(hosted.stored.get('core-defense.player.me'));
+  assert.equal(saved.reconnectToken, 'test-token');
 });
 
 test('lobby, countdown, active and finished controls never claim a blocked spawn is ready', () => {

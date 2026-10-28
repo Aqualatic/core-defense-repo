@@ -7,6 +7,8 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
+    "vendor:socketio": "node scripts/vendor-socketio.js",
+    "build:frontend": "node scripts/build-frontend.js",
     "balance": "node balance_sim.js",
     "test": "node --test test/*.test.js"
   },

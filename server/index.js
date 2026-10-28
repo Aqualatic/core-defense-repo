@@ -6,11 +6,24 @@ const express = require('express');
 const { Server } = require('socket.io');
 const C = require('../shared/config');
 const Game = require('./game');
+const { allowedOrigins: parseOrigins } = require('./origins');
 
-function createServer({ now = Date.now, autoTick = true } = {}) {
+function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) {
+  const origins = parseOrigins(allowedOrigins);
+  const permitted = origin => typeof origin === 'string' && origins.has(origin);
   const app = express();
   const server = http.createServer(app);
-  const io = new Server(server, { maxHttpBufferSize: C.network.maxPayloadBytes });
+  const io = new Server(server, {
+    serveClient: false,
+    maxHttpBufferSize: C.network.maxPayloadBytes,
+    cors: { origin: (origin, callback) => callback(null, permitted(origin)), methods: ['GET', 'POST'], credentials: false },
+    allowRequest: (req, callback) => callback(null, permitted(req.headers.origin))
+  });
+  // Also check requests/upgrades carrying an existing Engine.IO session ID.
+  io.engine.use((req, _res, next) => {
+    if (!permitted(req.headers.origin)) return next(new Error('Origin not allowed.'));
+    next();
+  });
   const rooms = new Map();
   app.get('/health', (_req, res) => res.type('text/plain').send('ok'));
   app.use('/shared', express.static(path.join(__dirname, '..', 'shared')));
