@@ -55,6 +55,12 @@ button:disabled { opacity: .4; cursor: not-allowed; }
 canvas { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; }
 #placementControls, #spendFeed { margin-bottom: 18px; }
 #spendFeed li { overflow-wrap: anywhere; }
+.tower-buttons { display: grid; gap: 5px; }
+.tower-buttons button { padding: 8px; min-height: 44px; }
+.tower-buttons .selected { border-color: var(--cyan); }
+#towerMode, #sellButton { width: 100%; }
+#scoreList { margin-top: 12px; }
+#scoreList li { display: block; overflow-wrap: anywhere; line-height: 1.6; }
 .canvas-hint { position: absolute; left: 14px; bottom: 12px; color: var(--muted); font-size: 12px; }
 aside { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: rgba(17,37,59,.7); }
 ul { display: grid; gap: 8px; padding: 0; margin: 0; list-style: none; }

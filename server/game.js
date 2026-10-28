@@ -3,7 +3,7 @@ const ticks = seconds => Math.round(seconds * C.network.tickHz);
 function newGame() {
   return { phase: 'lobby', tick: 0, countdownTick: 0, matchTick: 0, n: 0,
     coreHP: C.match.coreHP, money: C.economy.spawnerStart, runnerReadyTick: 0,
-    treasury: C.economy.defenderStart, treasuryError: 0, towers: [], spendFeed: [], nextSpendId: 1,
+    treasury: C.economy.defenderStart, treasuryError: 0, towers: [], scores: [], spendFeed: [], nextSpendId: 1,
     warnings: [], enemies: [], nextEntityId: 1, reason: '' };
 }
 function start(game, players) {
@@ -25,45 +25,108 @@ function addTreasury(game, amount) {
   game.treasuryError = (next - game.treasury) - delta;
   game.treasury = next;
 }
-function placeShooter(game, player, snapId) {
+function scoreFor(game, player) {
+  let score = game.scores.find(s => s.playerId === player.playerId);
+  if (!score) {
+    score = { playerId: player.playerId, nickname: player.nickname, kills: 0, damage: 0, assists: 0, points: 0 };
+    game.scores.push(score);
+  }
+  return score;
+}
+function spendEntry(game, player, tower, action, cost) {
+  game.spendFeed.push({ id: game.nextSpendId++, ownerId: player.playerId, nickname: player.nickname,
+    action, towerType: tower.type, snapId: tower.snapId, cost, matchTime: game.matchTick / C.network.tickHz });
+  if (game.spendFeed.length > C.ui.spendFeedLimit) game.spendFeed.shift();
+}
+function placeTower(game, player, snapId, type = 'Shooter') {
   if (player.role !== 'Defender') return 'Only Defenders can place towers.';
   if (game.phase !== 'playing') return 'Wait for the match to begin.';
+  if (typeof type !== 'string' || !Object.hasOwn(C.towers, type)) return 'Invalid tower type.';
   if (!Number.isInteger(snapId) || !C.map.snapPoints[snapId]) return 'Invalid snap point.';
   if (game.towers.some(t => t.snapId === snapId)) return 'That snap point is occupied. Select another point.';
-  const tower = C.towers.Shooter;
-  if (game.treasury < tower.cost) return 'Not enough money in the Shared Treasury.';
+  const stats = C.towers[type];
+  if (game.treasury < stats.cost) return 'Not enough money in the Shared Treasury.';
   // Validation and purchase are synchronous: the first valid request owns the slot.
-  addTreasury(game, -tower.cost);
-  game.towers.push({ id: game.nextEntityId++, snapId, ...C.map.snapPoints[snapId], type: 'Shooter',
+  addTreasury(game, -stats.cost);
+  const tower = { id: game.nextEntityId++, snapId, ...C.map.snapPoints[snapId], type,
     ownerId: player.playerId, ownerName: player.nickname, readyTick: game.matchTick,
-    kills: 0, damageDealt: 0, lastShot: null });
-  game.spendFeed.push({ id: game.nextSpendId++, ownerId: player.playerId, nickname: player.nickname,
-    towerType: 'Shooter', snapId, cost: tower.cost, matchTime: game.matchTick / C.network.tickHz });
-  if (game.spendFeed.length > C.ui.spendFeedLimit) game.spendFeed.shift();
+    placedTick: game.matchTick, costPaid: stats.cost, nextUpkeepTick: game.matchTick + ticks(C.upkeep.interval),
+    disabled: false, kills: 0, damageDealt: 0, lastShot: null };
+  game.towers.push(tower); scoreFor(game, player);
+  spendEntry(game, player, tower, 'placed', stats.cost);
   return null;
 }
-function fireTowers(game) {
+const placeShooter = (game, player, snapId) => placeTower(game, player, snapId, 'Shooter');
+function sellTower(game, player, towerId) {
+  if (player.role !== 'Defender') return 'Only Defenders can sell towers.';
+  if (game.phase !== 'playing') return 'Wait for the match to begin.';
+  const tower = game.towers.find(t => t.id === towerId);
+  if (!tower) return 'Tower not found.';
+  if (tower.ownerId !== player.playerId) return 'Only the owner can sell this tower.';
+  if (game.matchTick < tower.placedTick + ticks(C.selling.lockSeconds)) return 'Selling is locked for ' + C.selling.lockSeconds + ' second(s) after placement.';
+  const refund = tower.costPaid * C.selling.refundFraction;
+  game.towers = game.towers.filter(t => t.id !== towerId);
+  addTreasury(game, refund);
+  spendEntry(game, player, tower, 'sold', -refund);
+  return null;
+}
+function payUpkeep(game) {
   for (const tower of game.towers) {
-    if (game.matchTick < tower.readyTick) continue;
+    if (game.matchTick < tower.nextUpkeepTick) continue;
+    tower.nextUpkeepTick += ticks(C.upkeep.interval);
+    tower.disabled = game.treasury < C.upkeep.cost;
+    if (!tower.disabled) addTreasury(game, -C.upkeep.cost);
+  }
+}
+function damageEnemy(game, tower, enemy, amount) {
+  const score = scoreFor(game, { playerId: tower.ownerId, nickname: tower.ownerName });
+  const damage = Math.min(enemy.hp, amount);
+  enemy.hp -= damage; tower.damageDealt += damage;
+  score.damage += damage; score.points += damage * C.scoring.damagePerHP;
+  if (enemy.hp > 0) return;
+  tower.kills++; score.kills++;
+  score.points += C.scoring.killPoints[enemy.type];
+  addTreasury(game, C.enemies[enemy.type].bounty);
+  const active = (enemy.slows || []).filter(s => s.untilTick > game.matchTick);
+  const strongest = Math.min(1, ...active.map(s => s.multiplier));
+  const owners = new Set();
+  for (const effect of active) {
+    if (strongest >= 1 || effect.multiplier !== strongest || owners.has(effect.ownerId)) continue;
+    owners.add(effect.ownerId);
+    const assist = scoreFor(game, { playerId: effect.ownerId, nickname: effect.ownerName });
+    assist.assists++; assist.points += C.scoring.freezerAssist;
+  }
+  game.enemies = game.enemies.filter(e => e.id !== enemy.id);
+}
+function fireTowers(game) {
+  // Pulse slows first so same-tick assists do not depend on purchase order.
+  const ordered = [...game.towers.filter(t => t.type === 'Freezer'), ...game.towers.filter(t => t.type !== 'Freezer')];
+  for (const tower of ordered) {
+    if (tower.disabled || game.matchTick < tower.readyTick) continue;
     const stats = C.towers[tower.type];
+    const inRange = game.enemies.filter(e => Math.hypot(e.x - tower.x, e.y - tower.y) <= stats.range);
+    if (!inRange.length) continue;
+    tower.readyTick = game.matchTick + ticks(1 / stats.rate);
+    if (tower.type === 'Freezer') {
+      for (const enemy of inRange) {
+        enemy.slows = (enemy.slows || []).filter(s => s.towerId !== tower.id);
+        enemy.slows.push({ towerId: tower.id, ownerId: tower.ownerId, ownerName: tower.ownerName,
+          multiplier: stats.slowMultiplier, untilTick: game.matchTick + ticks(stats.slowSeconds) });
+      }
+      tower.lastShot = { tick: game.matchTick, x: tower.x, y: tower.y };
+      continue;
+    }
     let target = null, nearestCore = Infinity;
-    for (const enemy of game.enemies) {
-      if (Math.hypot(enemy.x - tower.x, enemy.y - tower.y) > stats.range) continue;
+    for (const enemy of inRange) {
       const distance = Math.hypot(enemy.x - C.map.core.x, enemy.y - C.map.core.y);
       if (distance < nearestCore || (distance === nearestCore && enemy.id < target.id)) {
         target = enemy; nearestCore = distance;
       }
     }
-    if (!target) continue;
-    tower.readyTick = game.matchTick + ticks(1 / stats.rate);
     tower.lastShot = { tick: game.matchTick, targetId: target.id, x: target.x, y: target.y };
-    const damage = Math.min(target.hp, stats.damage);
-    target.hp -= damage; tower.damageDealt += damage;
-    if (target.hp <= 0) {
-      tower.kills++;
-      addTreasury(game, C.enemies[target.type].bounty);
-      game.enemies = game.enemies.filter(e => e.id !== target.id);
-    }
+    const targets = tower.type === 'Cannon'
+      ? game.enemies.filter(e => Math.hypot(e.x - target.x, e.y - target.y) <= stats.splashRadius) : [target];
+    for (const enemy of targets) damageEnemy(game, tower, enemy, stats.damage);
   }
 }
 function spawnRunner(game, role, gateId) {
@@ -89,10 +152,16 @@ function step(game) {
   game.matchTick++;
   game.money += (C.economy.spawnerIncomeBase + C.economy.spawnerIncomePerDefender * game.n) / C.network.tickHz;
   addTreasury(game, C.economy.defenderIncome / C.network.tickHz);
+  payUpkeep(game);
   // A new Runner stays at its gate on the tick it appears.
   game.enemies = game.enemies.filter(enemy => {
     const dx = C.map.core.x - enemy.x, dy = C.map.core.y - enemy.y;
-    const distance = Math.hypot(dx, dy), movement = C.enemies.Runner.speed / C.network.tickHz;
+    const distance = Math.hypot(dx, dy);
+    // Movement covers the interval ending at this tick; an effect expiring now
+    // still slows this last interval, but cannot grant an assist at its end.
+    const multiplier = Math.min(1, ...(enemy.slows || []).filter(s => s.untilTick >= game.matchTick).map(s => s.multiplier));
+    const movement = C.enemies.Runner.speed * multiplier / C.network.tickHz;
+    enemy.slows = (enemy.slows || []).filter(s => s.untilTick > game.matchTick);
     if (distance <= movement) {
       game.coreHP = Math.max(0, game.coreHP - C.enemies.Runner.coreDamage);
       game.money += C.economy.coreHitReward;
@@ -103,7 +172,7 @@ function step(game) {
   });
   game.warnings = game.warnings.filter(warning => {
     if (game.matchTick < warning.releaseTick) return true;
-    game.enemies.push({ id: warning.id, ...C.map.spawnGates[warning.gateId], type: 'Runner', hp: C.enemies.Runner.hp });
+    game.enemies.push({ id: warning.id, ...C.map.spawnGates[warning.gateId], type: 'Runner', hp: C.enemies.Runner.hp, slows: [] });
     return false;
   });
   if (game.coreHP > 0) fireTowers(game);
@@ -119,8 +188,12 @@ function snapshot(game) {
     coreHP: game.coreHP, money: game.money, treasury: game.treasury, n: game.n, reason: game.reason,
     runnerCooldown: Math.max(0, (game.runnerReadyTick - game.matchTick) / C.network.tickHz),
     warnings: game.warnings.map(w => ({ id: w.id, gateId: w.gateId, remaining: (w.releaseTick - game.matchTick) / C.network.tickHz })),
-    enemies: game.enemies.map(e => ({ ...e })),
-    towers: game.towers.map(t => ({ ...t, lastShot: t.lastShot && { ...t.lastShot } })),
+    enemies: game.enemies.map(e => ({ ...e, slows: (e.slows || []).map(s => ({ ...s })) })),
+    towers: game.towers.map(t => ({ ...t, lastShot: t.lastShot && { ...t.lastShot },
+      sellLock: Math.max(0, (t.placedTick + ticks(C.selling.lockSeconds) - game.matchTick) / C.network.tickHz),
+      sellRefund: t.costPaid * C.selling.refundFraction,
+      upkeepIn: Math.max(0, (t.nextUpkeepTick - game.matchTick) / C.network.tickHz) })),
+    scores: game.scores.map(s => ({ ...s })),
     spendFeed: game.spendFeed.map(entry => ({ ...entry })) };
 }
-module.exports = { newGame, start, spawnRunner, placeShooter, step, snapshot };
+module.exports = { newGame, start, spawnRunner, placeShooter, placeTower, sellTower, step, snapshot };

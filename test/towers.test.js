@@ -51,11 +51,13 @@ test('all 16 fixed points are usable with no Defender-count scaling cap', () => 
   assert.equal(g.spendFeed.length, C.ui.spendFeedLimit);
 });
 
-test('ten seconds of shared income funds a Shooter exactly, without floating-point purchase delays', () => {
+test('shared income minus upkeep funds a Shooter exactly, without floating-point purchase delays', () => {
   const g = playing();
   for (const id of [0, 4, 8]) G.placeShooter(g, defender, id);
   assert.equal(g.treasury, 0);
   advance(g, 300);
+  assert.equal(g.treasury, 47); // 50 income minus 1 upkeep for each of three towers.
+  advance(g, 18);
   assert.equal(g.treasury, 50);
   assert.equal(G.placeShooter(g, defender, 12), null);
   assert.equal(g.treasury, 0);

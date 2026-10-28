@@ -201,3 +201,56 @@ test('placement validates shared funds and counts rejected attempts across recon
   const spectator = await f.client(); await request(spectator, 'join-room', { code: host.code, nickname: 'Late' });
   assert.match((await request(spectator, 'place-tower', { snapId: 8 })).error, /Only/);
 });
+
+test('two Defenders share bounty but keep separate damage/assist scores, ownership and selling after refresh', async t => {
+  const f = await setup(t), a = await f.client(), b = await f.client(), c = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  const sam = await request(b, 'join-room', { code: host.code, nickname: 'Sam' });
+  const lee = await request(c, 'join-room', { code: host.code, nickname: 'Lee' });
+  await request(a, 'start-match'); f.tick(300);
+  assert.equal((await request(b, 'place-tower', { type: 'Freezer', snapId: 12 })).ok, true);
+  assert.equal((await request(c, 'place-tower', { type: 'Shooter', snapId: 11 })).ok, true);
+  const g = f.app.rooms.get(host.code).game, freezerId = g.towers[0].id;
+  assert.match((await request(b, 'sell-tower', { towerId: freezerId })).error, /locked/);
+  assert.match((await request(c, 'sell-tower', { towerId: freezerId, ownerId: sam.playerId })).error, /owner/);
+  assert.match((await request(a, 'sell-tower', { towerId: freezerId })).error, /Only/);
+  await request(a, 'spawn-runner', { gateId: 0 });
+  const scoredA = event(a, 'room-state', s => s.game.scores.some(p => p.assists === 1));
+  const scoredC = event(c, 'room-state', s => s.game.scores.some(p => p.assists === 1));
+  f.tick(140);
+  const [first, second] = await Promise.all([scoredA, scoredC]); assert.deepEqual(first, second);
+  assert.equal(first.game.coreHP, 100);
+  const samScore = first.game.scores.find(s => s.playerId === sam.playerId);
+  const leeScore = first.game.scores.find(s => s.playerId === lee.playerId);
+  assert.equal(samScore.points, 5); assert.equal(samScore.damage, 0);
+  assert.equal(leeScore.points, 30); assert.equal(leeScore.damage, 20); assert.equal(leeScore.kills, 1);
+  const offline = event(a, 'room-state', s => s.players.some(p => !p.connected)); b.disconnect(); await offline;
+  assert.match((await request(c, 'sell-tower', { towerId: freezerId })).error, /owner/);
+  const refreshed = await f.client(), restored = event(refreshed, 'room-state');
+  await request(refreshed, 'resume-room', sam);
+  assert.equal((await restored).game.scores.find(s => s.playerId === sam.playerId).points, 5);
+  const before = g.treasury;
+  const sold = await Promise.all([request(refreshed, 'sell-tower', { towerId: freezerId }), request(refreshed, 'sell-tower', { towerId: freezerId })]);
+  assert.equal(sold.filter(r => r.ok).length, 1); assert.equal(g.treasury, before + 45);
+  assert.equal(g.scores.find(s => s.playerId === sam.playerId).points, 5);
+  f.tick(330);
+  assert.equal((await request(refreshed, 'place-tower', { type: 'Cannon', snapId: 12 })).ok, true);
+  assert.equal(g.towers.at(-1).ownerId, sam.playerId);
+});
+
+test('sell rate limits count rejected requests and survive reconnect without changing the treasury', async t => {
+  const f = await setup(t), a = await f.client(), b = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  const defender = await request(b, 'join-room', { code: host.code, nickname: 'Build' });
+  await request(a, 'start-match'); f.tick(300);
+  await request(b, 'place-tower', { type: 'Cannon', snapId: 12 });
+  for (let i = 0; i < 4; i++) assert.match((await request(b, 'sell-tower', { towerId: -1 })).error, /not found/);
+  const offline = event(a, 'room-state', s => s.players.some(p => !p.connected)); b.disconnect(); await offline;
+  const refreshed = await f.client(); await request(refreshed, 'resume-room', defender);
+  const g = f.app.rooms.get(host.code).game, id = g.towers[0].id;
+  assert.match((await request(refreshed, 'sell-tower', { towerId: id })).error, /rate limit/);
+  assert.equal(g.treasury, 30); assert.equal(g.towers.length, 1);
+  f.tick(31); const before = g.treasury;
+  assert.equal((await request(refreshed, 'sell-tower', { towerId: id })).ok, true);
+  assert.equal(g.treasury, before + 60);
+});

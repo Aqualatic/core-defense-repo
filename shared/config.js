@@ -18,7 +18,8 @@
       codeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ', reconnectMs: 120000, finishedExpiryMs: 900000 },
     match: { countdownSeconds: 10, durationSeconds: 300, coreHP: 100, liveEnemyCap: 80 },
     network: { tickHz: 30, snapshotHz: 15, interpolationMs: 100, snapshotBuffer: 60,
-      spawnRequestsPerSecond: 4, placementRequestsPerSecond: 4, generalRequestsPerSecond: 10, rateWindowMs: 1000,
+      spawnRequestsPerSecond: 4, placementRequestsPerSecond: 4, sellRequestsPerSecond: 4,
+      generalRequestsPerSecond: 10, rateWindowMs: 1000,
       keepAliveMs: 30000, requestTimeoutMs: 5000, maxPayloadBytes: 4096 },
     server: { defaultPort: 3000, bindHost: '0.0.0.0' },
     economy: { defenderStart: 150, defenderStartPerExtra: 10, defenderIncome: 5,
@@ -32,12 +33,15 @@
     },
     towers: {
       Shooter: { cost: 50, range: 120, damage: 12, rate: 2 },
-      Cannon: { cost: 120, range: 150, damage: 80, rate: 0.5 },
-      Freezer: { cost: 90, range: 100, damage: 0, rate: 1 }
+      Cannon: { cost: 120, range: 150, damage: 80, rate: 0.5, splashRadius: 45 },
+      Freezer: { cost: 90, range: 100, damage: 0, rate: 1, slowMultiplier: 0.5, slowSeconds: 2 }
     },
+    selling: { refundFraction: 0.5, lockSeconds: 1 },
+    // Provisional: the earlier numeric scoring table was not present in this project.
+    scoring: { damagePerHP: 1, killPoints: { Runner: 10 }, freezerAssist: 5 },
     upkeep: { cost: 1, interval: 10 }, repair: { cost: 60, heal: 5, cooldown: 20 },
     ui: { gridSpacing: 60, gateRadius: 18, gateHitRadius: 40, enemyRadius: 10,
-      coreRadius: 18, coreGlowRadius: 60, snapRadius: 7, towerRadius: 13,
+      coreRadius: 18, coreGlowRadius: 60, snapRadius: 7, towerRadius: 13, towerHitRadius: 32,
       shotFlashSeconds: 0.15, healthBarWidth: 24, healthBarHeight: 4, spendFeedLimit: 8 }
   };
 });

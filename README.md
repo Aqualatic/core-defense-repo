@@ -1,5 +1,5 @@
-# Core Defense — milestone 3
-This version adds Defender Shooter placement, automatic targeting and damage, kill bounties into one shared treasury, and a shared spend feed. It retains rooms, stable identities, reconnect, automatic roles, countdown and the server-authoritative Runner loop. Other towers/enemies, selling, upkeep, Repair, Surge, score UI and rematches are later milestones. Balance values remain provisional; no balance simulation was rerun or tuned.
+# Core Defense — milestone 4
+This version adds Cannon and Freezer placement, owner-only selling, tower upkeep, and personal damage/kill/Freezer-assist scores. It retains the 16 snap points, shared treasury, spend feed, rooms, stable identities, reconnect, countdown and authoritative Runner loop. Other enemies, Repair, Surge, end-screen MVPs and rematches remain later work. No balance grid was rerun or tuned. Numeric scoring defaults are explicitly provisional because the earlier scoring table was not available in this project.
 
 ## Run locally
 Install Node.js 22 or 24 (Node 24 is recommended). Extract this project and open a terminal in the folder containing package.json.
@@ -12,6 +12,8 @@ npm start
 Open http://localhost:3000. GET http://localhost:3000/health returns plain text `ok`.
 To use another port, set the PORT environment variable before starting.
 Run `npm test` for deterministic game-loop and two-client Socket.IO tests.
+
+For the phone test, reuse the same working address and origin configuration that passed milestone 3. This milestone does not alter origin checks.
 
 ## Two-window test
 1. Stop the old server, start this version, and reload both pages. Window A: in a normal browser window, open http://localhost:3000, enter a nickname and create a room. It shows Spawner and host.
@@ -28,6 +30,34 @@ Run `npm test` for deterministic game-loop and two-client Socket.IO tests.
 
 Browser storage must be allowed for refresh recovery. Use the same origin consistently (localhost and 127.0.0.1 have different storage). A copied player URL without its local token cannot reclaim that player.
 
+## Milestone 4 local tests
+Use the normal window as Spawner and incognito as Defender. Start a fresh room for each setup. A third browser/profile joining BEFORE Start gives you a second Defender for the ownership/assist split check.
+
+1. **Cannon:** choose Cannon (120), tap the top point (13) and Confirm Placement. Expect a tower marked C, the correct owner under Inspect / Sell, and `Name placed a Cannon -120`. Send a Runner from gate 1. It dies in one hit; a splash circle appears. The owner gets 20 actual damage, 1 kill and 30 points; the shared treasury gets 6. Fire cooldown is 2 seconds. Automated tests cover multiple victims within 45px, including victims outside the tower's 150px targeting range.
+2. **Freezer:** in a fresh room, place a Freezer (90) at point 13, then a Shooter (50) at point 12, the adjacent point to its left. Send a Runner through gate 1. It turns blue and travels at 60px/sec while slowed, then dies to the Shooter. With one owner, expect 20 damage, 1 kill, 1 assist and 35 points; treasury gets 6. With two Defenders owning one tower each, the Freezer owner gets 5 points/1 assist/0 damage, and the Shooter owner gets 30 points/1 kill/20 damage. Freezer alone never damages an enemy or awards points just for pulsing.
+3. **Overlap:** place a second Freezer near the first when affordable. Overlapping pulses keep enemies at 50% speed, never 25%. A pulse hits every in-range enemy once per second. Leaving range stops refreshes; the last slow lasts 2 seconds. A slowed Runner that reaches the Core awards no kill/assist points.
+4. **Sell:** immediately after placing, click Inspect / Sell and tap that tower. The Sell button stays disabled until 1 second has elapsed since placement, then shows +25 Shooter, +60 Cannon or +45 Freezer. Selling removes the tower, frees the point and adds exactly one refund to the shared treasury/feed. Rapid duplicate clicks cannot refund twice. Rebuying pays full cost and starts a new sell lock. Scores already earned remain.
+5. **Ownership:** inspect the other Defender's tower. Its owner is named and the button says Owner only. It stays unsellable by you even if you become host or its owner disconnects. A mid-match spectator has no placement/selling controls.
+6. **Upkeep:** inspect a tower's countdown. First bill is 10 seconds after its placement, then every 10 seconds. Each bill deducts 1 from the shared treasury. With three towers bought at match time zero and no kills/sales, treasury is 47 at 0:10: 150 - 150 + 50 income - 3 upkeep. Another 0.6 seconds earns the missing 3 for a Shooter. In real manual placement, bill times are staggered. Selling stops that tower's future bills.
+7. **Refresh:** refresh both current URLs during play, keeping incognito open. Ownership, scores, treasury, sell-lock age, upkeep schedule and current slow effects must survive; there must be no new charge or player. Tower selection/inspection resets. Paid towers keep acting while their owner is disconnected.
+
+Unpaid-upkeep recovery and exact simultaneous-action boundaries are deterministic automated tests. To inspect an unpaid tower in gameplay, it appears gray and its inspector says Paused: unpaid upkeep; it retries at its next 10-second bill, not as soon as money trickles in. No debt or partial charge is taken.
+
+## Milestone 4 rule cross-check
+| Rule | Implemented behavior to check |
+| --- | --- |
+| Cannon | 120 cost, 150 range, 80 damage, 0.5 shots/sec, 45px splash. Primary target is closest to Core among enemies in range. Splash damages every enemy within the primary target's circle, even outside tower range. |
+| Freezer | 90 cost, 100 range, 1 pulse/sec, 0 damage, 50% speed for 2 seconds. All in-range enemies receive the pulse. Strongest active slow wins; equal slows refresh their own expiry and never multiply. |
+| Personal credit | Actual HP removed goes to the damage-dealing tower's owner. The killing tower's owner receives the kill; bounty goes only to the shared treasury. Overkill is not damage credit. Scores persist after sales and disconnects. |
+| **Provisional scoring** | 1 point per actual HP damaged, 10 per Runner kill, 5 per Freezer assist. These were not recovered from the earlier approved table; verify them before treating them as exact historical spec matches. All are in `shared/config.js`. Only Runner kill points are active in this milestone. |
+| Assist attribution | Once per distinct owner of a strongest, still-active slow on a killed enemy. Multiple Freezers from one owner do not multiply points. Equal strongest slows from different owners each qualify; an owner may assist their own shooting tower. Expired/weaker slows, pulses without a kill and Core hits award no assist. An already-applied slow can finish after its source is sold. |
+| Selling | Latest instruction is strictly owner-only; no host exception, including after the owner's 120-second reservation expires. The older host-sells-expired-owner suggestion is superseded. Refund is 50% of the original price actually paid, into the shared treasury, after the 1-second lock. Unclaimed towers remain until the match ends. |
+| Sell/rebuy | Costs half the original price overall. Rebuying creates a new tower with a fresh sell lock, firing readiness and upkeep schedule. No free refund or score reset is possible; buying a fresh Cannon can fire sooner than waiting out the old cooldown, at a 60-credit loss. |
+| Upkeep | 1 per tower per 10 seconds measured from placement; no countdown or post-match billing. Unpaid towers pause until the next paid interval; no debt. Same-tick bills are processed in placement order. This follows the existing analytical simulator's pause/retry policy. |
+| Tick ordering | Income, due upkeep, movement/Core hits, warning release, Freezer pulses, damaging towers, win/lose. Enemies reaching the Core deal their hit before towers fire; same-tick Freezer assists do not depend on purchase order. |
+
+Balance numbers remain provisional. `balance_sim.js` is a separate older analytical model and was not rerun or updated for selling/scoring or this live pulse/tick ordering; it should not be used to certify these mechanics. Use the live-engine tests in `test/tower-rules.test.js` and `test/network.test.js` for this milestone.
+
 ## Role messaging fix
 - Active headings now say **Attack the Core** for the Spawner, **Defend the Core** for Defenders, and **Watching the match** for spectators. Previously everyone saw the Defender heading.
 - Spectators receive viewing guidance instead of Defender instructions. Lobby guidance follows host ownership; countdown hints follow the player's role.
@@ -42,11 +72,11 @@ To retest, create a room in a normal window and join in incognito. Start the mat
 - `shared/config.js` supplies the map dimensions, Core position, ring, all 16 snap points, all 8 gates, reconnect window, game timings, Runner/economy numbers, rates, and rendering dimensions.
 - The server and `balance_sim.js` require it; the browser loads the same file at /shared/config.js.
 - Simulation: 30 fixed ticks/sec. Periodic full snapshots: 15/sec, plus immediate lobby/connection updates. Rendering interpolates with a 100ms buffer, freezing on gaps rather than predicting outcomes.
-- Spawn and placement attempts each have a separate 4/sec/player limit (including rejected attempts); ordinary requests are limited to 10/sec/connection. Both player limits survive reconnect.
+- Spawn, placement and sell attempts each have a separate 4/sec/player limit (including rejected attempts); ordinary requests are limited to 10/sec/connection. These player limits survive reconnect.
 - Defenders select one of the 16 fixed points and confirm. The server selects the position from shared config, checks role/phase/occupancy/funds and charges the shared treasury atomically. No position, cost or ownership supplied by a client is trusted.
 - Shooter: cost 50, range 120, damage 12, two shots/sec. It fires on the first eligible tick, then at its configured interval, targeting the closest-to-Core enemy among those in range. Equal distances use the lower enemy ID. Damage is instant; shot lines are visual only. Enemies still ignore towers. Tick order retains movement/Core collisions before tower fire and the match-end check.
-- Shared treasury starts at 150 + 10 per extra Defender (N fixed at start), earns 5/sec during play and receives 6 per Runner kill. The killing tower retains its owner's kill and actual damage credit; overkill is not counted as extra damage. Towers keep working while the owner is offline. Upkeep and selling are not enabled in this milestone.
-- The latest eight purchases appear in the shared spend feed. Nicknames remain textContent, including in this feed. New placement limits, feed size and shot visuals are in shared/config.js; gameplay numbers were not rebalanced.
+- Shared treasury starts at 150 + 10 per extra Defender (N fixed at start), earns 5/sec during play and receives 6 per Runner kill. Selling refunds the treasury; tower upkeep deducts from it. Personal scores never create personal wallets.
+- The latest eight purchases/sales appear in the shared spend feed; total upkeep rate appears in the HUD and each tower's next bill in its inspector. Nicknames remain textContent in the feed, owner inspector and score list. All live combat, score, sale and upkeep values are in shared/config.js.
 - Money is charged and cooldown starts when the server accepts the click. A warning reserves an enemy slot; pending plus active enemies cannot exceed 80.
 - Health endpoint: /health. Server binds 0.0.0.0 and process.env.PORT.
 - Nicknames are rendered with textContent. Reconnect tokens never appear in shared snapshots.
@@ -75,7 +105,7 @@ The source is prepared for split deployment. Live publication and signed-out bro
    ```sh
    git init
    git add .
-   git commit -m "Implement Core Defense milestone 3"
+   git commit -m "Implement Core Defense milestone 4"
    git branch -M main
    git remote add origin https://github.com/YOUR_USERNAME/core-defense.git
    git push -u origin main
@@ -146,10 +176,12 @@ References (checked October 26, 2026):
 - https://docs.netlify.com/build/functions/overview/
 
 ## Verification
-Fresh milestone 3 verification: 34 automated tests pass. A clean production install and `npm start` smoke test also passed with two real Socket.IO clients, the automatic countdown/game loop, Shooter combat, bounty arithmetic and refresh-style reconnect. Node syntax checks pass. The package and lockfile both use version 0.3.0 with unchanged dependencies and Node engine range.
+Fresh verification: all 49 automated tests pass, along with Node syntax checks. A clean `npm ci --omit=dev` plus `npm start` smoke test passed using two real Socket.IO clients and the automatic 30 Hz loop: countdown, Freezer/Shooter combat, 35-point combined credit, exact first upkeep bills, reconnect, 45-credit Freezer refund and Cannon placement. No browser layout or phone-touch run was performed here.
+
+Milestone 4 adds deterministic tests for Cannon area damage, strongest-wins slowing/expiry/refresh, assist attribution, owner-only sales/locks, upkeep pause/recovery and score persistence. Network tests use real Socket.IO clients to check separate owners' scores, shared bounties, duplicate sales and refresh-style reconnect. The package and lockfile both use version 0.4.0 with unchanged dependencies and Node engine range.
 
 The browser executable could not be downloaded in this environment, so an actual browser layout/touch run remains a manual check. Client tests exercise DOM events and canvas drawing calls through test boundaries; they are not a substitute for the normal/incognito visual test above.
 
-Milestone 3 adds checks for placement validation, all 16 slots, simultaneous purchases, exact-income affordability, targeting/range/fire cadence, kill bounty deduplication, ownership and combat during reconnect, plus role-specific selection/confirmation UI. The existing Plan B origin, static asset and reconnect checks remain included. Live Sites/Render publication and signed-out device testing remain pending the actual URLs.
+The earlier placement, fixed-slot, shared-purchase, income, targeting, bounty and role/phase checks remain included, along with Plan B origin/static-asset/reconnect checks. Live Sites/Render publication and signed-out device testing remain pending the actual URLs.
 
 `npm test` covers countdown/income boundaries, all eight approach paths, exact warning/cooldown timing, Core collisions, role/cost/cap validation, fixed N, timer/Core tie ordering, two-client state agreement, authenticated reconnect, host transfer, spectator joining, rate limits, reconnect expiry and snapshot cadence. Client regression tests execute the shipped client against test DOM/transport boundaries to check role/phase changes, controls, refresh/reconnect ordering and expired/moved sessions. These checks do not verify browser layout; use the manual window tests above for visual confirmation.

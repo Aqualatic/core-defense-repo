@@ -61,7 +61,7 @@ function client({ refreshed = false, serverUrl = '', pageOrigin = 'http://localh
           { playerId: 'other', role: role === 'Spawner' ? 'Defender' : 'Spawner', nickname: 'Alex', connected: true }],
         game: { phase, coreHP: 97, remaining: 295, countdown: 10, money: 150, runnerCooldown: 0,
           reason: 'Defenders win: the Core survived.', enemies: [], warnings: [],
-          treasury: 150, towers: [], spendFeed: [], ...options.game } });
+          treasury: 150, towers: [], scores: [], spendFeed: [], ...options.game } });
     } };
 }
 
@@ -99,6 +99,21 @@ test('canvas draws selection range, owned towers, authoritative shot lines and d
   assert.ok(f.painted.some(p => p.name === 'arc' && p.args[0] === 810 && p.args[2] === 120));
   assert.ok(f.painted.some(p => p.name === 'lineTo' && p.args[0] === 600 && p.args[1] === 86));
   assert.ok(f.painted.some(p => p.name === 'fillRect' && Math.abs(p.args[2] - 9.6) < 1e-8));
+});
+
+test('canvas renders Cannon splash, Freezer pulses, type labels and slowed enemies from snapshots', () => {
+  const f = client();
+  f.snapshot('Defender', 'playing', { game: { matchTime: 3,
+    enemies: [{ id: 8, type: 'Runner', x: 600, y: 90, hp: 8, slows: [{ untilTick: 120 }] }],
+    towers: [{ id: 1, snapId: 12, x: 600, y: 190, type: 'Cannon', ownerId: 'me',
+      lastShot: { tick: 86, x: 600, y: 86 } },
+    { id: 2, snapId: 0, x: 810, y: 400, type: 'Freezer', ownerId: 'other',
+      lastShot: { tick: 86, x: 810, y: 400 } }] } });
+  f.draw();
+  assert.ok(f.painted.some(p => p.name === 'arc' && p.args[0] === 600 && p.args[1] === 86 && p.args[2] === 45));
+  assert.ok(f.painted.some(p => p.name === 'arc' && p.args[0] === 810 && p.args[2] === 100));
+  assert.ok(f.painted.some(p => p.name === 'fillText' && p.args[0] === 'C'));
+  assert.ok(f.painted.some(p => p.name === 'fillText' && p.args[0] === 'F'));
 });
 
 test('Defender taps the nearest empty point, then confirms; selecting alone never spends', () => {
@@ -153,6 +168,57 @@ test('shared treasury and spend feed update for every role, with nicknames as li
       spendFeed: [{ nickname: '<b>Sam</b>', towerType: 'Shooter', cost: 50 }] } });
     assert.equal(e.treasury.textContent, '106');
     assert.equal(e.spendFeed.children[0].textContent, '<b>Sam</b> placed a Shooter -50');
+  }
+});
+
+test('tower choices send the selected type, show config costs and gate affordability', () => {
+  for (const [index, type, cost] of [[1, 'Cannon', 120], [2, 'Freezer', 90]]) {
+    const f = client(), e = f.elements; f.snapshot('Defender');
+    const button = e.towerButtons.children[index]; button.onclick();
+    assert.match(e.towerLabel.textContent, new RegExp(type));
+    e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+    assert.equal(e.confirmPlacement.textContent, 'Confirm Placement · ' + cost);
+    e.confirmPlacement.onclick();
+    assert.equal(f.sent.findLast(r => r.name === 'place-tower').payload.type, type);
+  }
+  const f = client(), e = f.elements;
+  f.snapshot('Defender', 'playing', { game: { treasury: 89 } });
+  assert.equal(e.towerButtons.children[0].disabled, false);
+  assert.equal(e.towerButtons.children[1].disabled, true);
+  assert.equal(e.towerButtons.children[2].disabled, true);
+  f.snapshot('Spawner'); assert.ok(e.towerButtons.children.every(b => b.disabled));
+  f.snapshot('Defender', 'countdown'); assert.ok(e.towerButtons.children.every(b => b.disabled));
+});
+
+test('Inspect/Sell shows ownership and lock, sends tower ID once, and resets through reconnect', () => {
+  const f = client(), e = f.elements;
+  const tower = { id: 7, snapId: 12, type: 'Cannon', ownerId: 'me', ownerName: '<b>Sam</b>',
+    x: 600, y: 190, sellLock: 1, sellRefund: 60, upkeepIn: 10, disabled: false };
+  const snapshot = () => f.snapshot('Defender', 'playing', { game: { towers: [tower] } });
+  snapshot(); e.towerMode.onclick(); e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+  assert.match(e.towerDetails.textContent, /Owner: <b>Sam<\/b>/);
+  assert.match(e.towerDetails.textContent, /locked/); assert.equal(e.sellButton.disabled, true);
+  assert.equal(e.confirmPlacement.hidden, true);
+  tower.sellLock = 0; snapshot(); assert.equal(e.sellButton.disabled, false);
+  tower.ownerId = 'other'; snapshot(); assert.equal(e.sellButton.textContent, 'Owner only');
+  assert.equal(e.sellButton.disabled, true);
+  tower.ownerId = 'me'; snapshot(); e.sellButton.onclick(); e.sellButton.onclick();
+  assert.equal(f.sent.filter(r => r.name === 'sell-tower').length, 1);
+  assert.equal(f.sent.findLast(r => r.name === 'sell-tower').payload.towerId, 7);
+  f.acknowledge('sell-tower'); assert.equal(e.sellButton.disabled, true);
+  e.gameCanvas.onpointerdown({ clientX: 300, clientY: 95 });
+  f.socket.disconnect(); assert.equal(e.sellButton.disabled, true);
+  f.socket.connect(); snapshot(); f.acknowledge('resume-room');
+  assert.equal(e.sellButton.hidden, true); assert.equal(e.confirmPlacement.disabled, true);
+});
+
+test('scores and sale refunds are safe text and remain visible through role changes', () => {
+  const f = client(), e = f.elements;
+  for (const role of ['Spawner', 'Defender', 'Spectator']) {
+    f.snapshot(role, 'playing', { game: { scores: [{ playerId: 'retired', nickname: '<i>Lee</i>', points: 35, kills: 1, damage: 20, assists: 1 }],
+      spendFeed: [{ nickname: '<b>Sam</b>', action: 'sold', towerType: 'Cannon', cost: -60 }] } });
+    assert.equal(e.scoreList.children.at(-1).textContent, '<i>Lee</i>: 35 pts · 1 kills · 20 damage · 1 assists');
+    assert.equal(e.spendFeed.children[0].textContent, '<b>Sam</b> sold a Cannon +60');
   }
 });
 

@@ -115,7 +115,7 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       const role = room.game.phase !== 'lobby' ? 'Spectator'
         : [...room.players.values()].some(p => p.role === 'Spawner') ? 'Defender' : 'Spawner';
       const player = { playerId: randomUUID(), token: randomBytes(32).toString('hex'),
-        nickname: nickname(room, name), role, requests: [], placementRequests: [], connected: false };
+        nickname: nickname(room, name), role, requests: [], placementRequests: [], sellRequests: [], connected: false };
       room.players.set(player.playerId, player);
       const credentials = attach(socket, room, player);
       broadcast(room); return credentials;
@@ -157,7 +157,14 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
     action('place-tower', payload => {
       const { room, player } = membership(socket);
       if (!rate(player.placementRequests, C.network.placementRequestsPerSecond)) throw new Error('Placement rate limit: wait a moment.');
-      const error = Game.placeShooter(room.game, player, payload.snapId);
+      const error = Game.placeTower(room.game, player, payload.snapId, payload.type);
+      if (error) throw new Error(error);
+      return {};
+    });
+    action('sell-tower', payload => {
+      const { room, player } = membership(socket);
+      if (!rate(player.sellRequests, C.network.sellRequestsPerSecond)) throw new Error('Sell rate limit: wait a moment.');
+      const error = Game.sellTower(room.game, player, payload.towerId);
       if (error) throw new Error(error);
       return {};
     });

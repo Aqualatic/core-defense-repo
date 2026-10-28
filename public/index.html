@@ -35,6 +35,7 @@
           <span>Time <strong id="timer"></strong></span>
           <span>Spawner money <strong id="money"></strong></span>
           <span>Shared Treasury <strong id="treasury"></strong></span>
+          <span id="upkeepLabel"></span>
           <span id="connection" role="status">Connecting…</span>
         </div>
         <p id="actionError" class="error" role="status"></p>
@@ -48,14 +49,20 @@
             <p id="runnerLabel"></p>
             <div id="gateButtons" class="gate-buttons" aria-label="Spawn Runner at gate"></div>
             <div id="placementControls" class="hidden">
-              <p id="shooterLabel"></p>
+              <div id="towerButtons" class="tower-buttons" aria-label="Tower type"></div>
+              <p id="towerLabel"></p>
+              <button id="towerMode">Inspect / Sell</button>
               <p id="placementStatus" class="small" role="status"></p>
               <button id="confirmPlacement" class="primary" disabled>Confirm Placement</button>
+              <p id="towerDetails" class="small"></p>
+              <button id="sellButton" disabled hidden>Sell tower</button>
             </div>
             <h3>Spend feed</h3>
             <ul id="spendFeed" aria-label="Shared treasury spending"></ul>
             <h3>Players</h3>
             <ul id="playerList"></ul>
+            <h3>Defender scores</h3>
+            <ul id="scoreList"></ul>
             <p class="small">Share the room code. Open the base URL in another window to join as a different player.</p>
           </aside>
         </div>
