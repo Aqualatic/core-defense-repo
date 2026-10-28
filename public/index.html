@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Core Defense</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel lobby" id="lobbyPanel">
+        <p class="eyebrow">REAL-TIME PARTY GAME</p>
+        <h1>Core Defense</h1>
+        <p class="subtitle">Create a room or join your friends with a four-letter code.</p>
+        <label for="nickname">Nickname</label>
+        <input id="nickname" placeholder="Your name" autocomplete="off" />
+        <div class="join-row">
+          <input id="roomCode" aria-label="Room code" placeholder="ROOM" autocomplete="off" />
+          <button id="joinButton">Join room</button>
+        </div>
+        <button class="primary" id="createButton">Create new room</button>
+        <p class="error" id="error"></p>
+      </section>
+
+      <section class="panel game hidden" id="gamePanel">
+        <div class="game-header">
+          <div>
+            <p class="eyebrow">ROOM <span id="roomLabel">----</span></p>
+            <h2 id="phaseLabel">Lobby</h2>
+          </div>
+          <div><div class="host-badge" id="hostBadge">Waiting for host</div><strong id="roleLabel"></strong></div>
+        </div>
+        <div class="hud">
+          <span>Core <strong id="coreHP"></strong></span>
+          <span>Time <strong id="timer"></strong></span>
+          <span>Spawner money <strong id="money"></strong></span>
+          <span id="connection" role="status">Connecting…</span>
+        </div>
+        <p id="actionError" class="error" role="status"></p>
+        <div class="game-layout">
+          <div class="canvas-wrap">
+            <canvas id="gameCanvas" aria-label="Shared arena with eight numbered spawn gates"></canvas>
+          </div>
+          <aside>
+            <button id="startButton" class="primary">Start match</button>
+            <p id="hint" class="small"></p>
+            <p id="runnerLabel"></p>
+            <div id="gateButtons" class="gate-buttons" aria-label="Spawn Runner at gate"></div>
+            <h3>Players</h3>
+            <ul id="playerList"></ul>
+            <p class="small">Share the room code. Open the base URL in another window to join as a different player.</p>
+          </aside>
+        </div>
+      </section>
+    </main>
+    <div class="rotate-overlay">Rotate your phone to landscape to view the arena.</div>
+    <script src="/shared/config.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="/client.js"></script>
+  </body>
+</html>

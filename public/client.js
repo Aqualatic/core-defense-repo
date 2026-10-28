@@ -1,0 +1,205 @@
+const C = window.CoreDefenseConfig;
+const socket = io({ autoConnect: false });
+const $ = id => document.getElementById(id);
+const canvas = $('gameCanvas'), ctx = canvas.getContext('2d');
+canvas.width = C.map.width; canvas.height = C.map.height;
+$('nickname').maxLength = C.room.nicknameLength;
+$('roomCode').maxLength = C.room.codeLength;
+let state = null, frames = [], credentials = null, ready = false, pending = false;
+const storageKey = id => 'core-defense.player.' + id;
+const params = new URLSearchParams(location.search);
+try {
+  const stored = JSON.parse(localStorage.getItem(storageKey(params.get('player'))));
+  if (stored && stored.code === params.get('room')) credentials = stored;
+} catch { /* The user can create/join if browser storage is unavailable. */ }
+
+function error(message) {
+  (state ? $('actionError') : $('error')).textContent = message || '';
+}
+function showRoom() {
+  $('lobbyPanel').classList.add('hidden'); $('gamePanel').classList.remove('hidden');
+  document.body.classList.add('in-room');
+}
+function saveIdentity(result) {
+  credentials = { code: result.code, playerId: result.playerId, reconnectToken: result.reconnectToken };
+  try { localStorage.setItem(storageKey(result.playerId), JSON.stringify(credentials)); }
+  catch { error('Browser storage is unavailable; refreshing cannot restore this player.'); }
+  const url = new URL(location.href);
+  url.search = new URLSearchParams({ room: result.code, player: result.playerId }).toString();
+  history.replaceState(null, '', url);
+  ready = true; showRoom(); updateHUD();
+}
+function request(event, payload, callback = () => {}) {
+  if (!socket.connected) return error('Connection lost. Reconnecting…');
+  socket.timeout(C.network.requestTimeoutMs).emit(event, payload, (timeout, result) => {
+    if (timeout) return error('Request timed out. Reconnecting will recover server state.');
+    if (!result.ok) return error(result.error);
+    error(''); callback(result);
+  });
+}
+function join(event) {
+  const nickname = $('nickname').value.trim();
+  if (!nickname) return error('Enter a nickname.');
+  if (pending) return;
+  pending = true;
+  socket.timeout(C.network.requestTimeoutMs).emit(event,
+    { nickname, code: $('roomCode').value }, (timeout, result) => {
+      pending = false;
+      if (timeout) return error('Could not connect. Try again.');
+      if (!result.ok) return error(result.error);
+      error(''); saveIdentity(result);
+    });
+}
+$('createButton').onclick = () => join('create-room');
+$('joinButton').onclick = () => join('join-room');
+$('roomCode').oninput = () => { $('roomCode').value = $('roomCode').value.toUpperCase(); };
+$('startButton').onclick = () => request('start-match', {});
+socket.on('connect', () => {
+  $('connection').textContent = credentials ? 'Restoring player…' : 'Connected';
+  if (credentials) {
+    socket.timeout(C.network.requestTimeoutMs).emit('resume-room', credentials, (timeout, result) => {
+      if (timeout) return error('Restore timed out. Refresh to retry.');
+      if (!result.ok) {
+        credentials = null; ready = false; state = null; frames = [];
+        history.replaceState(null, '', location.pathname);
+        $('gamePanel').classList.add('hidden'); $('lobbyPanel').classList.remove('hidden');
+        document.body.classList.remove('in-room'); error(result.error); return;
+      }
+      frames = []; saveIdentity(result);
+    });
+  } else updateHUD();
+});
+socket.on('disconnect', () => {
+  ready = false; $('connection').textContent = 'Disconnected — reconnecting…'; updateHUD();
+});
+socket.on('connect_error', () => error('Cannot reach the server. Retrying…'));
+socket.on('session-replaced', () => {
+  ready = false; socket.disconnect();
+  error('This player was opened in another window. Open the base URL to join as a different player.');
+});
+socket.on('room-expired', () => { ready = false; error('Room expired. Open the base URL to create a new room.'); });
+socket.on('room-state', next => {
+  state = next;
+  frames.push({ state: next, receivedAt: performance.now() });
+  if (frames.length > C.network.snapshotBuffer) frames.shift();
+  updateHUD();
+});
+setInterval(() => { if (socket.connected) socket.emit('keep-alive'); }, C.network.keepAliveMs);
+
+const gates = C.map.spawnGates.map((gate, gateId) => {
+  const button = document.createElement('button');
+  button.textContent = String(gateId + 1);
+  button.title = 'Spawn Runner at gate ' + (gateId + 1);
+  button.onclick = () => sendRunner(gateId);
+  $('gateButtons').append(button);
+  return button;
+});
+function canSpawn() {
+  const me = state?.players.find(p => p.playerId === credentials?.playerId);
+  return ready && socket.connected && me?.role === 'Spawner' && state.game.phase === 'playing' &&
+    state.game.money >= C.enemies.Runner.cost && state.game.runnerCooldown <= 0;
+}
+function sendRunner(gateId) {
+  if (canSpawn()) request('spawn-runner', { gateId });
+}
+canvas.addEventListener('pointerdown', event => {
+  if (!canSpawn()) return;
+  const bounds = canvas.getBoundingClientRect();
+  const x = (event.clientX - bounds.left) * canvas.width / bounds.width;
+  const y = (event.clientY - bounds.top) * canvas.height / bounds.height;
+  let chosen = -1, nearest = C.ui.gateHitRadius;
+  C.map.spawnGates.forEach((gate, i) => {
+    const d = Math.hypot(x - gate.x, y - gate.y);
+    if (d <= nearest) { nearest = d; chosen = i; }
+  });
+  if (chosen >= 0) sendRunner(chosen);
+});
+function updateHUD() {
+  if (!state) return;
+  const g = state.game, me = state.players.find(p => p.playerId === credentials?.playerId);
+  $('roomLabel').textContent = state.code;
+  $('phaseLabel').textContent = g.phase === 'countdown' ? 'Starting in ' + Math.ceil(g.countdown)
+    : g.phase === 'playing' ? 'Defend the Core' : g.phase === 'finished' ? 'Match finished' : 'Lobby';
+  $('roleLabel').textContent = 'Your role: ' + (me?.role || 'Joining…');
+  $('hostBadge').textContent = state.hostId === me?.playerId ? 'You are host'
+    : 'Host: ' + (state.players.find(p => p.playerId === state.hostId)?.nickname || 'Waiting for reconnect');
+  $('coreHP').textContent = Math.ceil(g.coreHP) + ' / ' + C.match.coreHP;
+  const seconds = Math.ceil(g.remaining);
+  $('timer').textContent = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+  $('money').textContent = Math.floor(g.money);
+  if (ready) $('connection').textContent = 'Connected';
+  const host = me && state.hostId === me.playerId;
+  $('startButton').hidden = !host || g.phase !== 'lobby';
+  $('startButton').disabled = !ready || !state.players.some(p => p.connected && p.role === 'Spawner') ||
+    !state.players.some(p => p.connected && p.role === 'Defender');
+  $('hint').textContent = g.phase === 'finished' ? g.reason
+    : g.phase === 'lobby' ? 'The host starts when a Spawner and Defender are connected.'
+    : g.phase === 'countdown' ? 'Get ready. Actions and income start after the countdown.'
+    : me?.role === 'Spawner' ? 'Click a numbered orange gate to send a Runner.'
+    : 'Watch incoming gate warnings and Core HP. Towers arrive in the next milestone.';
+  $('runnerLabel').textContent = 'Runner · ' + C.enemies.Runner.cost + ' credits · ' +
+    (g.runnerCooldown > 0 ? g.runnerCooldown.toFixed(1) + 's cooldown' : 'Ready');
+  gates.forEach(button => { button.disabled = !canSpawn(); });
+  $('playerList').replaceChildren(...state.players.map(player => {
+    const li = document.createElement('li'), name = document.createElement('span'), role = document.createElement('span');
+    name.textContent = player.nickname + (player.playerId === me?.playerId ? ' (you)' : '');
+    role.textContent = player.role + (!player.connected ? ' · reconnecting' : '');
+    li.append(name, role); return li;
+  }));
+}
+
+// Render 100ms behind the newest received snapshot. Freeze on a network gap;
+// never predict damage, money, spawn acceptance, or a match outcome.
+function interpolated() {
+  if (!frames.length) return null;
+  const last = frames[frames.length - 1];
+  const target = last.state.serverNow + performance.now() - last.receivedAt - C.network.interpolationMs;
+  let a = frames[0], b = a;
+  for (const frame of frames) {
+    if (frame.state.serverNow <= target) a = frame;
+    if (frame.state.serverNow >= target) { b = frame; break; }
+    b = frame;
+  }
+  const span = b.state.serverNow - a.state.serverNow;
+  const weight = span > 0 ? Math.max(0, Math.min(1, (target - a.state.serverNow) / span)) : 0;
+  const later = new Map(b.state.game.enemies.map(e => [e.id, e]));
+  return { ...a.state.game, enemies: a.state.game.enemies.map(e => {
+    const end = later.get(e.id);
+    return end ? { ...e, x: e.x + (end.x - e.x) * weight, y: e.y + (end.y - e.y) * weight } : e;
+  }) };
+}
+function circle(x, y, radius, fill) {
+  ctx.fillStyle = fill; ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fill();
+}
+function draw() {
+  requestAnimationFrame(draw);
+  const g = interpolated();
+  if (!g) return;
+  const m = C.map;
+  ctx.fillStyle = '#071422'; ctx.fillRect(0, 0, m.width, m.height);
+  ctx.strokeStyle = 'rgba(84,230,255,.08)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= m.width; x += C.ui.gridSpacing) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, m.height); ctx.stroke(); }
+  for (let y = 0; y <= m.height; y += C.ui.gridSpacing) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(m.width, y); ctx.stroke(); }
+  ctx.strokeStyle = 'rgba(84,230,255,.22)'; ctx.setLineDash([8, 10]);
+  ctx.beginPath(); ctx.arc(m.core.x, m.core.y, m.ringRadius, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+  m.snapPoints.forEach(p => circle(p.x, p.y, C.ui.snapRadius, '#244563'));
+  const glow = ctx.createRadialGradient(m.core.x, m.core.y, 0, m.core.x, m.core.y, C.ui.coreGlowRadius);
+  glow.addColorStop(0, '#54e6ff'); glow.addColorStop(1, 'rgba(84,230,255,0)');
+  circle(m.core.x, m.core.y, C.ui.coreGlowRadius, glow);
+  circle(m.core.x, m.core.y, C.ui.coreRadius, '#dffcff');
+  ctx.textAlign = 'center'; ctx.font = 'bold 16px system-ui';
+  m.spawnGates.forEach((gate, i) => {
+    circle(gate.x, gate.y, C.ui.gateRadius, canSpawn() ? '#ffad5a' : '#92673c');
+    ctx.fillStyle = '#071422'; ctx.fillText(i + 1, gate.x, gate.y + 5);
+    const warnings = g.warnings.filter(w => w.gateId === i);
+    if (warnings.length) {
+      const inward = Math.atan2(m.core.y - gate.y, m.core.x - gate.x);
+      ctx.fillStyle = '#ffce8a';
+      ctx.fillText('Runner incoming ' + Math.max(0, Math.min(...warnings.map(w => w.remaining))).toFixed(1) + 's',
+        gate.x + Math.cos(inward) * 115, gate.y + Math.sin(inward) * 55);
+    }
+  });
+  g.enemies.forEach(e => circle(e.x, e.y, C.ui.enemyRadius, '#ff6d81'));
+}
+socket.connect();
+requestAnimationFrame(draw);
