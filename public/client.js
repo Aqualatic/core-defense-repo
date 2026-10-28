@@ -6,6 +6,7 @@ canvas.width = C.map.width; canvas.height = C.map.height;
 $('nickname').maxLength = C.room.nicknameLength;
 $('roomCode').maxLength = C.room.codeLength;
 let state = null, frames = [], credentials = null, ready = false, pending = false;
+let connectionStatus = 'Connecting…';
 const storageKey = id => 'core-defense.player.' + id;
 const params = new URLSearchParams(location.search);
 try {
@@ -21,6 +22,7 @@ function showRoom() {
   document.body.classList.add('in-room');
 }
 function saveIdentity(result) {
+  error('');
   credentials = { code: result.code, playerId: result.playerId, reconnectToken: result.reconnectToken };
   try { localStorage.setItem(storageKey(result.playerId), JSON.stringify(credentials)); }
   catch { error('Browser storage is unavailable; refreshing cannot restore this player.'); }
@@ -55,10 +57,15 @@ $('joinButton').onclick = () => join('join-room');
 $('roomCode').oninput = () => { $('roomCode').value = $('roomCode').value.toUpperCase(); };
 $('startButton').onclick = () => request('start-match', {});
 socket.on('connect', () => {
-  $('connection').textContent = credentials ? 'Restoring player…' : 'Connected';
+  ready = false;
+  connectionStatus = credentials ? 'Restoring player…' : 'Connected';
+  updateHUD();
   if (credentials) {
     socket.timeout(C.network.requestTimeoutMs).emit('resume-room', credentials, (timeout, result) => {
-      if (timeout) return error('Restore timed out. Refresh to retry.');
+      if (timeout) {
+        connectionStatus = 'Restore timed out. Refresh to retry.';
+        updateHUD(); return error(connectionStatus);
+      }
       if (!result.ok) {
         credentials = null; ready = false; state = null; frames = [];
         history.replaceState(null, '', location.pathname);
@@ -67,17 +74,24 @@ socket.on('connect', () => {
       }
       frames = []; saveIdentity(result);
     });
-  } else updateHUD();
+  }
 });
 socket.on('disconnect', () => {
-  ready = false; $('connection').textContent = 'Disconnected — reconnecting…'; updateHUD();
+  ready = false; connectionStatus = 'Disconnected — reconnecting…'; updateHUD();
 });
-socket.on('connect_error', () => error('Cannot reach the server. Retrying…'));
+socket.on('connect_error', () => {
+  ready = false; connectionStatus = 'Cannot reach the server. Retrying…';
+  updateHUD(); error(connectionStatus);
+});
 socket.on('session-replaced', () => {
   ready = false; socket.disconnect();
+  connectionStatus = 'Session moved to another window'; updateHUD();
   error('This player was opened in another window. Open the base URL to join as a different player.');
 });
-socket.on('room-expired', () => { ready = false; error('Room expired. Open the base URL to create a new room.'); });
+socket.on('room-expired', () => {
+  ready = false; connectionStatus = 'Room expired'; updateHUD();
+  error('Room expired. Open the base URL to create a new room.');
+});
 socket.on('room-state', next => {
   state = next;
   frames.push({ state: next, receivedAt: performance.now() });
@@ -115,11 +129,15 @@ canvas.addEventListener('pointerdown', event => {
   if (chosen >= 0) sendRunner(chosen);
 });
 function updateHUD() {
+  $('connection').textContent = ready && socket.connected ? 'Connected' : connectionStatus;
   if (!state) return;
   const g = state.game, me = state.players.find(p => p.playerId === credentials?.playerId);
+  const role = me?.role, spawner = role === 'Spawner', spectator = role === 'Spectator';
+  const activeTitle = spawner ? 'Attack the Core' : role === 'Defender' ? 'Defend the Core'
+    : spectator ? 'Watching the match' : 'Match in progress';
   $('roomLabel').textContent = state.code;
   $('phaseLabel').textContent = g.phase === 'countdown' ? 'Starting in ' + Math.ceil(g.countdown)
-    : g.phase === 'playing' ? 'Defend the Core' : g.phase === 'finished' ? 'Match finished' : 'Lobby';
+    : g.phase === 'playing' ? activeTitle : g.phase === 'finished' ? 'Match finished' : 'Lobby';
   $('roleLabel').textContent = 'Your role: ' + (me?.role || 'Joining…');
   $('hostBadge').textContent = state.hostId === me?.playerId ? 'You are host'
     : 'Host: ' + (state.players.find(p => p.playerId === state.hostId)?.nickname || 'Waiting for reconnect');
@@ -127,18 +145,28 @@ function updateHUD() {
   const seconds = Math.ceil(g.remaining);
   $('timer').textContent = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
   $('money').textContent = Math.floor(g.money);
-  if (ready) $('connection').textContent = 'Connected';
   const host = me && state.hostId === me.playerId;
   $('startButton').hidden = !host || g.phase !== 'lobby';
-  $('startButton').disabled = !ready || !state.players.some(p => p.connected && p.role === 'Spawner') ||
+  $('startButton').disabled = !ready || !socket.connected || !state.players.some(p => p.connected && p.role === 'Spawner') ||
     !state.players.some(p => p.connected && p.role === 'Defender');
-  $('hint').textContent = g.phase === 'finished' ? g.reason
-    : g.phase === 'lobby' ? 'The host starts when a Spawner and Defender are connected.'
-    : g.phase === 'countdown' ? 'Get ready. Actions and income start after the countdown.'
-    : me?.role === 'Spawner' ? 'Click a numbered orange gate to send a Runner.'
+  $('hint').textContent = !ready || !socket.connected ? connectionStatus
+    : !me ? 'Confirming your player role…'
+    : g.phase === 'finished' ? g.reason
+    : spectator ? 'You are spectating this round. Watch the match; player actions are unavailable.'
+    : g.phase === 'lobby' ? (host ? 'Start when a Spawner and Defender are connected.' : 'Waiting for the host to start the match.')
+    : g.phase === 'countdown' ? (spawner ? 'Get ready to send Runners. Spawning and income start after the countdown.'
+      : 'Get ready to watch incoming Runners. Towers arrive in the next milestone.')
+    : spawner ? 'Click a numbered orange gate to send a Runner.'
     : 'Watch incoming gate warnings and Core HP. Towers arrive in the next milestone.';
-  $('runnerLabel').textContent = 'Runner · ' + C.enemies.Runner.cost + ' credits · ' +
-    (g.runnerCooldown > 0 ? g.runnerCooldown.toFixed(1) + 's cooldown' : 'Ready');
+  const runnerStatus = !ready || !socket.connected ? 'Waiting for connection'
+    : g.phase === 'lobby' ? 'Available after match starts'
+    : g.phase === 'countdown' ? 'Available after countdown'
+    : g.phase === 'finished' ? 'Match finished'
+    : g.runnerCooldown > 0 ? g.runnerCooldown.toFixed(1) + 's cooldown'
+    : g.money < C.enemies.Runner.cost ? 'Not enough money' : 'Ready';
+  $('runnerLabel').textContent = 'Runner · ' + C.enemies.Runner.cost + ' credits · ' + runnerStatus;
+  $('runnerLabel').classList.toggle('hidden', !spawner);
+  $('gateButtons').classList.toggle('hidden', !spawner);
   gates.forEach(button => { button.disabled = !canSpawn(); });
   $('playerList').replaceChildren(...state.players.map(player => {
     const li = document.createElement('li'), name = document.createElement('span'), role = document.createElement('span');

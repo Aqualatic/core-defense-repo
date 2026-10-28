@@ -19,13 +19,22 @@ Run `npm test` for deterministic game-loop and two-client Socket.IO tests.
 3. Window A: click Start match. Both show a 10-second countdown; money and the five-minute match timer remain frozen during it.
 4. When playing, click top gate 1 (or gate button 1) in A. The server immediately charges 20; the global Runner cooldown is 1.5 seconds. Both clients show a Runner warning for 2 seconds, then a pink Runner traveling straight toward the Core at 120 logical pixels/second.
 5. About 5.1 seconds after the accepted click, that Runner reaches the Core center, disappears, and Core HP changes from 100 to 97. The Spawner gains 5 money. Passive income is 4.5/sec with one Defender.
-6. Click another gate during cooldown: no additional purchase occurs. The Defender's gate buttons are disabled, and the server also rejects forged Defender spawn requests.
+6. Click another gate during cooldown: no additional purchase occurs. Runner controls are shown only to the Spawner; the server also rejects forged Defender spawn requests.
 7. Refresh A during play. The same player ID, nickname, role, money, cooldown and match state return; there is no duplicate player. Refresh B too. Each window has its own player ID in the URL and its token in localStorage. Host transfers to a connected player when the current host disconnects; reconnecting does not steal host rights back.
 8. For a visible offline test, disconnect one window's network briefly, then restore it within 120 seconds. The other window shows that player as reconnecting. After 120 seconds, the reservation/token expires. The match continues during a playing-phase disconnect.
 9. A disconnect during countdown returns the room to the lobby so the host can restart when both sides are connected. New arrivals during countdown/play are spectators and cannot change N.
 10. To test a fresh match after the simple finished status, open the base URL and create another room. Play Again is a later milestone.
 
 Browser storage must be allowed for refresh recovery. Use the same origin consistently (localhost and 127.0.0.1 have different storage). A copied player URL without its local token cannot reclaim that player.
+
+## Role messaging fix
+- Active headings now say **Attack the Core** for the Spawner, **Defend the Core** for Defenders, and **Watching the match** for spectators. Previously everyone saw the Defender heading.
+- Spectators receive viewing guidance instead of Defender instructions. Lobby guidance follows host ownership; countdown hints follow the player's role.
+- Runner controls and purchase status appear only for the Spawner. The status no longer says Ready in the lobby, countdown, finished match, while disconnected, or without enough money.
+- Refresh/reconnect shows connection recovery guidance until identity confirmation. Expired rooms and sessions opened elsewhere replace stale action hints and disable controls immediately.
+- Core HP, timer, explicitly labeled Spawner money, gate warnings, player roster, and server-provided match result are shared information and remain visible to everyone.
+
+To retest, create a room in a normal window and join in incognito. Start the match and compare the headings and hints; refresh each window during play and verify the role-specific text returns. A third window joining mid-match should show Spectator, Watching the match, and no Runner controls. Role selection is still automatic in this milestone; each snapshot updates the UI from the current server-assigned role.
 
 ## Scope and configuration
 - `shared/config.js` supplies the map dimensions, Core position, ring, all 16 snap points, all 8 gates, reconnect window, game timings, Runner/economy numbers, rates, and rendering dimensions.
@@ -76,4 +85,4 @@ References (checked October 26, 2026):
 - https://render.com/docs/free
 
 ## Verification
-`npm test` covers countdown/income boundaries, all eight approach paths, exact warning/cooldown timing, Core collisions, role/cost/cap validation, fixed N, timer/Core tie ordering, two-client state agreement, authenticated reconnect, host transfer, spectator joining, rate limits, reconnect expiry and snapshot cadence. Browser canvas appearance still needs the manual two-window test if the remote browser cannot reach the development server.
+`npm test` covers countdown/income boundaries, all eight approach paths, exact warning/cooldown timing, Core collisions, role/cost/cap validation, fixed N, timer/Core tie ordering, two-client state agreement, authenticated reconnect, host transfer, spectator joining, rate limits, reconnect expiry and snapshot cadence. Client regression tests execute the shipped client against test DOM/transport boundaries to check role/phase changes, controls, refresh/reconnect ordering and expired/moved sessions. These checks do not verify browser layout; use the manual window tests above for visual confirmation.
