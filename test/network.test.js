@@ -14,7 +14,8 @@ function event(socket, name, predicate = () => true) {
 const request = (socket, name, data = {}) => socket.timeout(3000).emitWithAck(name, data);
 async function setup(t) {
   let clock = 1000000;
-  const app = createServer({ autoTick: false, now: () => clock,
+  const logs = [];
+  const app = createServer({ autoTick: false, now: () => clock, logMatch: entry => logs.push(entry),
     allowedOrigins: 'http://localhost:3000,https://core-defense.example' });
   await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const url = 'http://127.0.0.1:' + app.server.address().port, clients = [];
@@ -24,7 +25,7 @@ async function setup(t) {
     clients.push(c); const ready = event(c, 'connect'); c.connect(); await ready; return c;
   }
   function tick(count) { for (let i = 0; i < count; i++) { clock += 1000 / C.network.tickHz; app.tick(); } }
-  return { app, url, client, tick, addMs: ms => { clock += ms; } };
+  return { app, url, client, tick, logs, addMs: ms => { clock += ms; } };
 }
 test('two clients share lobby, countdown, movement and stable authenticated reconnect', async t => {
   const f = await setup(t), a = await f.client(), b = await f.client();
@@ -215,24 +216,24 @@ test('two Defenders share bounty but keep separate damage/assist scores, ownersh
   assert.match((await request(c, 'sell-tower', { towerId: freezerId, ownerId: sam.playerId })).error, /owner/);
   assert.match((await request(a, 'sell-tower', { towerId: freezerId })).error, /Only/);
   await request(a, 'spawn-runner', { gateId: 0 });
-  const scoredA = event(a, 'room-state', s => s.game.scores.some(p => p.assists === 1));
-  const scoredC = event(c, 'room-state', s => s.game.scores.some(p => p.assists === 1));
+  const scoredA = event(a, 'room-state', s => s.game.scores.some(p => p.kills === 1));
+  const scoredC = event(c, 'room-state', s => s.game.scores.some(p => p.kills === 1));
   f.tick(140);
   const [first, second] = await Promise.all([scoredA, scoredC]); assert.deepEqual(first, second);
   assert.equal(first.game.coreHP, 100);
   const samScore = first.game.scores.find(s => s.playerId === sam.playerId);
   const leeScore = first.game.scores.find(s => s.playerId === lee.playerId);
-  assert.equal(samScore.points, 5); assert.equal(samScore.damage, 0);
-  assert.equal(leeScore.points, 30); assert.equal(leeScore.damage, 20); assert.equal(leeScore.kills, 1);
+  assert.equal(samScore.points, 2); assert.equal(samScore.damage, 0);
+  assert.equal(leeScore.points, 25); assert.equal(leeScore.damage, 20); assert.equal(leeScore.kills, 1);
   const offline = event(a, 'room-state', s => s.players.some(p => !p.connected)); b.disconnect(); await offline;
   assert.match((await request(c, 'sell-tower', { towerId: freezerId })).error, /owner/);
   const refreshed = await f.client(), restored = event(refreshed, 'room-state');
   await request(refreshed, 'resume-room', sam);
-  assert.equal((await restored).game.scores.find(s => s.playerId === sam.playerId).points, 5);
+  assert.equal((await restored).game.scores.find(s => s.playerId === sam.playerId).points, 2);
   const before = g.treasury;
   const sold = await Promise.all([request(refreshed, 'sell-tower', { towerId: freezerId }), request(refreshed, 'sell-tower', { towerId: freezerId })]);
   assert.equal(sold.filter(r => r.ok).length, 1); assert.equal(g.treasury, before + 45);
-  assert.equal(g.scores.find(s => s.playerId === sam.playerId).points, 5);
+  assert.equal(g.scores.find(s => s.playerId === sam.playerId).points, 2);
   f.tick(330);
   assert.equal((await request(refreshed, 'place-tower', { type: 'Cannon', snapId: 12 })).ok, true);
   assert.equal(g.towers.at(-1).ownerId, sam.playerId);
@@ -253,4 +254,91 @@ test('sell rate limits count rejected requests and survive reconnect without cha
   f.tick(31); const before = g.treasury;
   assert.equal((await request(refreshed, 'sell-tower', { towerId: id })).ok, true);
   assert.equal(g.treasury, before + 60);
+});
+
+test('typed spawns share an attempt limit, reserve Swarm slots and keep warnings/cooldowns through refresh', async t => {
+  const f = await setup(t), a = await f.client('https://core-defense.example'), b = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  await request(b, 'join-room', { code: host.code, nickname: 'Build' });
+  await request(a, 'start-match'); f.tick(300);
+  assert.equal((await request(a, 'spawn-enemy', { type: 'Swarm', gateId: 0 })).ok, true);
+  assert.equal((await request(a, 'spawn-enemy', { type: 'Tank', gateId: 2 })).ok, true);
+  assert.match((await request(a, 'spawn-enemy', { type: 'Swarm', gateId: 3 })).error, /cooldown/);
+  assert.match((await request(a, 'spawn-runner', { gateId: 1 })).error, /money/);
+  const offline = event(b, 'room-state', s => s.players.some(p => !p.connected)); a.disconnect(); await offline;
+  const refreshed = await f.client('https://core-defense.example'), restored = event(refreshed, 'room-state');
+  await request(refreshed, 'resume-room', host);
+  const s = await restored;
+  assert.equal(s.game.money, 10); assert.equal(s.game.enemySlots.pending, 6);
+  assert.deepEqual(s.game.warnings.map(w => w.type), ['Swarm', 'Tank']);
+  assert.equal(s.game.spawns.Swarm.cooldown, 6); assert.equal(s.game.spawns.Tank.cooldown, 8);
+  assert.match((await request(refreshed, 'spawn-enemy', { type: 'Runner', gateId: 0 })).error, /rate limit/);
+  assert.match((await request(b, 'spawn-enemy', { type: 'Tank', gateId: 0 })).error, /Only/);
+  const first = event(b, 'room-state', s => s.game.enemies.length === 2);
+  f.tick(60); const live = await first;
+  assert.deepEqual(live.game.enemies.map(e => [e.type, e.hp]), [['Swarm', 100], ['Tank', 300]]);
+  assert.equal(live.game.enemySlots.used, 6);
+  const split = event(b, 'room-state', s => s.game.enemies.filter(e => e.type === 'Tiny').length === 5);
+  f.tick(104); const children = await split;
+  assert.equal(children.game.enemySlots.used, 6); assert.equal(children.game.coreHP, 100);
+  assert.equal(children.game.scores.find(p => p.role === 'Defender').kills, 0);
+});
+
+test('simultaneous Core Repairs charge once, credit the actor and persist shared cooldown across refresh', async t => {
+  const f = await setup(t), a = await f.client(), b = await f.client(), c = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  const sam = await request(b, 'join-room', { code: host.code, nickname: 'Sam' });
+  const lee = await request(c, 'join-room', { code: host.code, nickname: 'Lee' });
+  await request(a, 'start-match');
+  assert.match((await request(b, 'repair-core')).error, /begin/); f.tick(300);
+  assert.match((await request(b, 'repair-core')).error, /full/);
+  assert.match((await request(a, 'repair-core')).error, /Only/);
+  // Exact low-HP fixture isolates the shared transaction without a full damage battle.
+  const g = f.app.rooms.get(host.code).game; g.coreHP = 90;
+  const before = g.treasury;
+  const results = await Promise.all([request(b, 'repair-core', { heal: 100, cost: 0 }), request(c, 'repair-core')]);
+  assert.equal(results.filter(r => r.ok).length, 1); assert.match(results.find(r => !r.ok).error, /cooldown/);
+  assert.equal(g.coreHP, 95); assert.equal(g.treasury, before - 60);
+  const winner = results[0].ok ? sam : lee;
+  assert.equal(g.scores.find(p => p.playerId === winner.playerId).points, 10);
+  assert.equal(g.spendFeed.filter(e => e.action === 'repaired').length, 1);
+  const offline = event(a, 'room-state', s => s.players.some(p => !p.connected)); b.disconnect(); await offline;
+  const refreshed = await f.client(), restored = event(refreshed, 'room-state');
+  await request(refreshed, 'resume-room', sam); assert.equal((await restored).game.repairCooldown, 20);
+  assert.match((await request(refreshed, 'repair-core')).error, /cooldown/);
+  assert.match((await request(refreshed, 'repair-core')).error, /cooldown/);
+  assert.match((await request(refreshed, 'repair-core')).error, /rate limit/);
+  f.tick(599); assert.match((await request(c, 'repair-core')).error, /cooldown/);
+  f.tick(1); assert.equal((await request(c, 'repair-core')).ok, true); assert.equal(g.coreHP, 100);
+  const paid = g.treasury; assert.match((await request(c, 'repair-core')).error, /full/);
+  assert.equal(g.treasury, paid);
+});
+
+test('each completed match logs cooldown seconds once and awards only the winning participants', async t => {
+  const f = await setup(t), a = await f.client(), b = await f.client(), c = await f.client();
+  const host = await request(a, 'create-room', { nickname: 'Attack' });
+  const sam = await request(b, 'join-room', { code: host.code, nickname: 'Sam' });
+  await request(a, 'start-match'); f.tick(300);
+  const late = await request(c, 'join-room', { code: host.code, nickname: 'Late' });
+  const g = f.app.rooms.get(host.code).game; g.money = 40;
+  await request(a, 'spawn-enemy', { type: 'Runner', gateId: 0 }); f.tick(45);
+  g.matchTick = C.match.durationSeconds * C.network.tickHz - 1; f.tick(1);
+  assert.equal(f.logs.length, 1);
+  const { economy, ...cooldownRecord } = f.logs[0];
+  assert.deepEqual(cooldownRecord, { event: 'spawner-cooldown-summary', room: host.code, endedBy: 'match-finished',
+    winner: 'Defender', defenders: 1, elapsedSeconds: 300,
+    perTypeSeconds: { Runner: 1.5, Tank: 0, Swarm: 0 }, anyTypeSeconds: 1.5, allAffordableSeconds: 1.5 });
+  assert.deepEqual(economy.settings, { upkeepSlope: 0, coreHitReward: 5 });
+  assert.equal(economy.samples[0].seconds, 0); assert.equal(economy.samples.at(-1).seconds, 300);
+  assert.equal(economy.spawner.totalSpent, 20);
+  assert.ok(Math.abs(economy.defenders.finalBalance - g.treasury) < 1e-7);
+  assert.equal(g.scores.find(p => p.playerId === sam.playerId).winBonus, 100);
+  assert.equal(g.scores.find(p => p.playerId === host.playerId).winBonus, 0);
+  assert.equal(g.scores.some(p => p.playerId === late.playerId), false);
+  f.tick(30); assert.equal(f.logs.length, 1);
+  const offline = event(a, 'room-state', s => s.players.some(p => !p.connected)); b.disconnect(); await offline;
+  const refreshed = await f.client(), restored = event(refreshed, 'room-state');
+  await request(refreshed, 'resume-room', sam);
+  assert.equal((await restored).game.scores.find(p => p.playerId === sam.playerId).winBonus, 100);
+  assert.equal(f.logs.length, 1);
 });

@@ -36,8 +36,10 @@
           <span>Spawner money <strong id="money"></strong></span>
           <span>Shared Treasury <strong id="treasury"></strong></span>
           <span id="upkeepLabel"></span>
+          <span id="enemySlotsLabel"></span>
           <span id="connection" role="status">Connecting…</span>
         </div>
+        <ul id="upkeepAlerts" aria-label="Paused towers"></ul>
         <p id="actionError" class="error" role="status"></p>
         <div class="game-layout">
           <div class="canvas-wrap">
@@ -46,8 +48,10 @@
           <aside>
             <button id="startButton" class="primary">Start match</button>
             <p id="hint" class="small"></p>
+            <div id="enemyButtons" class="enemy-buttons hidden" aria-label="Enemy type and spawn availability"></div>
             <p id="runnerLabel"></p>
-            <div id="gateButtons" class="gate-buttons" aria-label="Spawn Runner at gate"></div>
+            <div id="gateButtons" class="gate-buttons" aria-label="Spawn selected enemy at gate"></div>
+            <p id="spawnDiagnostics" class="small hidden"></p>
             <div id="placementControls" class="hidden">
               <div id="towerButtons" class="tower-buttons" aria-label="Tower type"></div>
               <p id="towerLabel"></p>
@@ -57,11 +61,15 @@
               <p id="towerDetails" class="small"></p>
               <button id="sellButton" disabled hidden>Sell tower</button>
             </div>
+            <div id="repairControls" class="hidden">
+              <button id="repairButton" disabled>Core Repair</button>
+              <p id="repairStatus" class="small" role="status"></p>
+            </div>
             <h3>Spend feed</h3>
             <ul id="spendFeed" aria-label="Shared treasury spending"></ul>
             <h3>Players</h3>
             <ul id="playerList"></ul>
-            <h3>Defender scores</h3>
+            <h3>Personal scores</h3>
             <ul id="scoreList"></ul>
             <p class="small">Share the room code. Open the base URL in another window to join as a different player.</p>
           </aside>

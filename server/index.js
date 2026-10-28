@@ -8,7 +8,7 @@ const C = require('../shared/config');
 const Game = require('./game');
 const { allowedOrigins: parseOrigins } = require('./origins');
 
-function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) {
+function createServer({ now = Date.now, autoTick = true, allowedOrigins, logMatch = entry => console.log(JSON.stringify(entry)) } = {}) {
   const origins = parseOrigins(allowedOrigins);
   const permitted = origin => typeof origin === 'string' && origins.has(origin);
   const app = express();
@@ -35,6 +35,13 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
         role: p.role, connected: p.connected, reconnectUntil: p.reconnectUntil })) };
   }
   const broadcast = room => io.to(room.code).emit('room-state', state(room));
+  function logDiagnostics(room, endedBy) {
+    if (room.diagnosticsLogged || !room.game.matchTick) return;
+    room.diagnosticsLogged = true;
+    logMatch({ event: 'spawner-cooldown-summary', room: room.code, endedBy, winner: room.game.winner,
+      defenders: room.game.n, elapsedSeconds: room.game.matchTick / C.network.tickHz,
+      ...Game.spawnDiagnostics(room.game), economy: Game.economySummary(room.game) });
+  }
   function transferHost(room) {
     if (room.players.get(room.hostId)?.connected) return;
     room.hostId = [...room.players.values()].filter(p => p.connected)
@@ -46,9 +53,9 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       for (const p of room.players.values()) {
         if (!p.connected && now() >= p.reconnectUntil) { room.players.delete(p.playerId); changed = true; }
       }
-      if (!room.players.size) { rooms.delete(room.code); continue; }
+      if (!room.players.size) { logDiagnostics(room, 'room-empty'); rooms.delete(room.code); continue; }
       if (changed) { transferHost(room); broadcast(room); }
-      if (room.game.phase === 'finished' && room.finishedAt && now() - room.finishedAt >= C.room.finishedExpiryMs) {
+      if (room.game.phase === 'finished' && room.finishedAt !== undefined && now() - room.finishedAt >= C.room.finishedExpiryMs) {
         io.to(room.code).emit('room-expired');
         io.in(room.code).socketsLeave(room.code);
         rooms.delete(room.code);
@@ -115,7 +122,7 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       const role = room.game.phase !== 'lobby' ? 'Spectator'
         : [...room.players.values()].some(p => p.role === 'Spawner') ? 'Defender' : 'Spawner';
       const player = { playerId: randomUUID(), token: randomBytes(32).toString('hex'),
-        nickname: nickname(room, name), role, requests: [], placementRequests: [], sellRequests: [], connected: false };
+        nickname: nickname(room, name), role, requests: [], placementRequests: [], sellRequests: [], repairRequests: [], connected: false };
       room.players.set(player.playerId, player);
       const credentials = attach(socket, room, player);
       broadcast(room); return credentials;
@@ -147,13 +154,15 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       if (error) throw new Error(error);
       broadcast(room); return {};
     });
-    action('spawn-runner', payload => {
+    function spawn(payload, type) {
       const { room, player } = membership(socket);
       if (!rate(player.requests, C.network.spawnRequestsPerSecond)) throw new Error('Spawn rate limit: wait a moment.');
-      const error = Game.spawnRunner(room.game, player.role, payload.gateId);
+      const error = Game.spawnEnemy(room.game, player.role, type, payload.gateId);
       if (error) throw new Error(error);
       return {};
-    });
+    }
+    action('spawn-runner', payload => spawn(payload, 'Runner'));
+    action('spawn-enemy', payload => spawn(payload, payload.type));
     action('place-tower', payload => {
       const { room, player } = membership(socket);
       if (!rate(player.placementRequests, C.network.placementRequestsPerSecond)) throw new Error('Placement rate limit: wait a moment.');
@@ -165,6 +174,13 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
       const { room, player } = membership(socket);
       if (!rate(player.sellRequests, C.network.sellRequestsPerSecond)) throw new Error('Sell rate limit: wait a moment.');
       const error = Game.sellTower(room.game, player, payload.towerId);
+      if (error) throw new Error(error);
+      return {};
+    });
+    action('repair-core', () => {
+      const { room, player } = membership(socket);
+      if (!rate(player.repairRequests, C.network.repairRequestsPerSecond)) throw new Error('Repair rate limit: wait a moment.');
+      const error = Game.repairCore(room.game, player);
       if (error) throw new Error(error);
       return {};
     });
@@ -184,7 +200,9 @@ function createServer({ now = Date.now, autoTick = true, allowedOrigins } = {}) 
   function tick() {
     for (const room of rooms.values()) {
       Game.step(room.game);
-      if (room.game.phase === 'finished' && !room.finishedAt) room.finishedAt = now();
+      if (room.game.phase === 'finished' && room.finishedAt === undefined) {
+        room.finishedAt = now(); logDiagnostics(room, 'match-finished');
+      }
       if (room.game.tick % (C.network.tickHz / C.network.snapshotHz) === 0) broadcast(room);
     }
   }

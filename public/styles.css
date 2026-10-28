@@ -58,6 +58,12 @@ canvas { display: block; width: 100%; height: auto; aspect-ratio: 3 / 2; }
 .tower-buttons { display: grid; gap: 5px; }
 .tower-buttons button { padding: 8px; min-height: 44px; }
 .tower-buttons .selected { border-color: var(--cyan); }
+.enemy-buttons { display: grid; gap: 5px; }
+.enemy-buttons button { padding: 8px; min-height: 44px; text-align: left; }
+.enemy-buttons .selected { border-color: var(--orange); }
+.enemy-buttons.hidden { display: none; }
+#repairButton { width: 100%; }
+#upkeepAlerts li { color: #ff8d8d; }
 #towerMode, #sellButton { width: 100%; }
 #scoreList { margin-top: 12px; }
 #scoreList li { display: block; overflow-wrap: anywhere; line-height: 1.6; }

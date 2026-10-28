@@ -18,17 +18,18 @@
       codeAlphabet: 'ABCDEFGHJKMNPQRSTUVWXYZ', reconnectMs: 120000, finishedExpiryMs: 900000 },
     match: { countdownSeconds: 10, durationSeconds: 300, coreHP: 100, liveEnemyCap: 80 },
     network: { tickHz: 30, snapshotHz: 15, interpolationMs: 100, snapshotBuffer: 60,
-      spawnRequestsPerSecond: 4, placementRequestsPerSecond: 4, sellRequestsPerSecond: 4,
+      spawnRequestsPerSecond: 4, placementRequestsPerSecond: 4, sellRequestsPerSecond: 4, repairRequestsPerSecond: 4,
       generalRequestsPerSecond: 10, rateWindowMs: 1000,
       keepAliveMs: 30000, requestTimeoutMs: 5000, maxPayloadBytes: 4096 },
     server: { defaultPort: 3000, bindHost: '0.0.0.0' },
     economy: { defenderStart: 150, defenderStartPerExtra: 10, defenderIncome: 5,
       spawnerStart: 150, spawnerIncomeBase: 4, spawnerIncomePerDefender: 0.5, coreHitReward: 5 },
     spawnWarningSeconds: 2,
+    spawnTypes: ['Runner', 'Tank', 'Swarm'],
     enemies: {
       Runner: { cost: 20, hp: 20, speed: 120, coreDamage: 3, cooldown: 1.5, bounty: 6 },
       Tank: { cost: 80, hp: 300, speed: 35, coreDamage: 15, cooldown: 8, bounty: 24 },
-      Swarm: { cost: 60, hp: 100, speed: 65, coreDamage: 0, cooldown: 6, bounty: 18 },
+      Swarm: { cost: 60, hp: 100, speed: 65, coreDamage: 0, cooldown: 6, bounty: 18, splitCount: 5, splitDistance: 150 },
       Tiny: { cost: 0, hp: 15, speed: 90, coreDamage: 2, cooldown: 0, bounty: 1 }
     },
     towers: {
@@ -37,11 +38,15 @@
       Freezer: { cost: 90, range: 100, damage: 0, rate: 1, slowMultiplier: 0.5, slowSeconds: 2 }
     },
     selling: { refundFraction: 0.5, lockSeconds: 1 },
-    // Provisional: the earlier numeric scoring table was not present in this project.
-    scoring: { damagePerHP: 1, killPoints: { Runner: 10 }, freezerAssist: 5 },
-    upkeep: { cost: 1, interval: 10 }, repair: { cost: 60, heal: 5, cooldown: 20 },
+    scoring: { damagePerHP: 0.25, killPoints: { Runner: 20, Tank: 20, Swarm: 20, Tiny: 5 },
+      coreDamagePerHP: 5, repair: 10, winBonus: 100, freezerAssist: 2,
+      assistEnemyCooldownSeconds: 2, assistTowerWindowSeconds: 1, assistTowerPointsPerWindow: 10 },
+    upkeep: { cost: 1, interval: 10, upkeepSlope: 0, scaleAfterTowers: 8 },
+    diagnostics: { moneySampleSeconds: 30 }, repair: { cost: 60, heal: 5, cooldown: 20 },
     ui: { gridSpacing: 60, gateRadius: 18, gateHitRadius: 40, enemyRadius: 10,
       coreRadius: 18, coreGlowRadius: 60, snapRadius: 7, towerRadius: 13, towerHitRadius: 32,
-      shotFlashSeconds: 0.15, healthBarWidth: 24, healthBarHeight: 4, spendFeedLimit: 8 }
+      shotFlashSeconds: 0.15, healthBarWidth: 24, healthBarHeight: 4, spendFeedLimit: 8,
+      enemyStyles: { Runner: { radius: 10, color: '#ff6d81' }, Tank: { radius: 16, color: '#e6ad68' },
+        Swarm: { radius: 14, color: '#c78aff' }, Tiny: { radius: 6, color: '#ffc1ef' } } }
   };
 });

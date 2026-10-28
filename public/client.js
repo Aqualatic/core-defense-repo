@@ -10,6 +10,7 @@ $('roomCode').maxLength = C.room.codeLength;
 let state = null, frames = [], credentials = null, ready = false, pending = false;
 let selectedSnap = null, placing = false;
 let towerType = 'Shooter', managing = false, selectedTowerId = null, selling = false;
+let enemyType = 'Runner', repairing = false;
 let connectionStatus = 'Connecting…';
 const storageKey = id => 'core-defense.player.' + id;
 const params = new URLSearchParams(location.search);
@@ -82,7 +83,7 @@ socket.on('connect', () => {
   }
 });
 socket.on('disconnect', () => {
-  ready = false; placing = false; selling = false; connectionStatus = 'Disconnected — reconnecting…'; updateHUD();
+  ready = false; placing = false; selling = false; repairing = false; connectionStatus = 'Disconnected — reconnecting…'; updateHUD();
 });
 socket.on('connect_error', () => {
   ready = false; connectionStatus = 'Cannot reach the server. Retrying…';
@@ -108,23 +109,50 @@ setInterval(() => { if (socket.connected) socket.emit('keep-alive'); }, C.networ
 const gates = C.map.spawnGates.map((gate, gateId) => {
   const button = document.createElement('button');
   button.textContent = String(gateId + 1);
-  button.title = 'Spawn Runner at gate ' + (gateId + 1);
-  button.onclick = () => sendRunner(gateId);
+  button.title = 'Spawn selected enemy at gate ' + (gateId + 1);
+  button.onclick = () => sendEnemy(gateId);
   $('gateButtons').append(button);
   return button;
 });
-function canSpawn() {
+const enemyButtons = C.spawnTypes.map(type => {
+  const button = document.createElement('button');
+  button.onclick = () => { if (canSpawn(type)) { enemyType = type; error(''); updateHUD(); } };
+  $('enemyButtons').append(button);
+  return { type, button };
+});
+function canSpawn(type = enemyType) {
   const me = state?.players.find(p => p.playerId === credentials?.playerId);
   return ready && socket.connected && me?.role === 'Spawner' && state.game.phase === 'playing' &&
-    state.game.money >= C.enemies.Runner.cost && state.game.runnerCooldown <= 0;
+    state.game.spawns[type].ready;
 }
-function sendRunner(gateId) {
-  if (canSpawn()) request('spawn-runner', { gateId });
+function sendEnemy(gateId) {
+  if (canSpawn()) request('spawn-enemy', { type: enemyType, gateId });
+}
+function spawnBlockText(type) {
+  const g = state.game;
+  if (!ready || !socket.connected) return 'Waiting for connection';
+  if (g.phase === 'lobby') return 'Available after match starts';
+  if (g.phase === 'countdown') return 'Available after countdown';
+  if (g.phase === 'finished') return 'Match finished';
+  const status = g.spawns[type], reasons = [];
+  if (status.moneyBlocked) reasons.push('Not enough money: need ' + Math.ceil(C.enemies[type].cost - g.money));
+  if (status.cooldown > 0) reasons.push(status.cooldown.toFixed(1) + 's cooldown');
+  if (status.capBlocked) reasons.push('Enemy cap: needs ' + (C.enemies[type].splitCount || 1) + ' slots');
+  return reasons.join(' · ') || 'Ready';
 }
 function canSelectTower() {
   const me = state?.players.find(p => p.playerId === credentials?.playerId);
   return ready && socket.connected && me?.role === 'Defender' && state.game.phase === 'playing';
 }
+function canRepair() {
+  return canSelectTower() && !repairing && state.game.coreHP < C.match.coreHP &&
+    state.game.treasury >= C.repair.cost && state.game.repairCooldown <= 0;
+}
+$('repairButton').onclick = () => {
+  if (!canRepair()) return;
+  repairing = true; updateHUD();
+  request('repair-core', {}, () => {}, () => { repairing = false; updateHUD(); });
+};
 const towerButtons = Object.keys(C.towers).map(type => {
   const button = document.createElement('button');
   button.textContent = type + ' · ' + C.towers[type].cost;
@@ -197,7 +225,7 @@ canvas.addEventListener('pointerdown', event => {
     const d = Math.hypot(x - gate.x, y - gate.y);
     if (d <= nearest) { nearest = d; chosen = i; }
   });
-  if (chosen >= 0) sendRunner(chosen);
+  if (chosen >= 0) sendEnemy(chosen);
 });
 function updateHUD() {
   $('connection').textContent = ready && socket.connected ? 'Connected' : connectionStatus;
@@ -217,7 +245,13 @@ function updateHUD() {
   $('timer').textContent = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
   $('money').textContent = Math.floor(g.money);
   $('treasury').textContent = Math.floor(g.treasury);
-  $('upkeepLabel').textContent = 'Upkeep: ' + (g.towers.length * C.upkeep.cost) + ' / ' + C.upkeep.interval + 's';
+  $('upkeepLabel').textContent = 'Upkeep: ' + (g.towers.length * g.upkeepPerTower) + ' / ' + C.upkeep.interval + 's';
+  $('enemySlotsLabel').textContent = 'Enemy slots: ' + g.enemySlots.used + ' / ' + g.enemySlots.cap;
+  $('upkeepAlerts').replaceChildren(...g.towers.filter(t => t.disabled).map(tower => {
+    const li = document.createElement('li');
+    li.textContent = tower.type + ' · point ' + (tower.snapId + 1) + ' · ' + tower.ownerName + ": paused: can't pay upkeep";
+    return li;
+  }));
   const host = me && state.hostId === me.playerId;
   $('startButton').hidden = !host || g.phase !== 'lobby';
   $('startButton').disabled = !ready || !socket.connected || !state.players.some(p => p.connected && p.role === 'Spawner') ||
@@ -227,20 +261,34 @@ function updateHUD() {
     : g.phase === 'finished' ? g.reason
     : spectator ? 'You are spectating this round. Watch the match; player actions are unavailable.'
     : g.phase === 'lobby' ? (host ? 'Start when a Spawner and Defender are connected.' : 'Waiting for the host to start the match.')
-    : g.phase === 'countdown' ? (spawner ? 'Get ready to send Runners. Spawning and income start after the countdown.'
+    : g.phase === 'countdown' ? (spawner ? 'Get ready to send enemies. Spawning and income start after the countdown.'
       : 'Get ready to place towers. Placement and income start after the countdown.')
-    : spawner ? 'Click a numbered orange gate to send a Runner.'
+    : spawner ? 'Choose Runner, Tank or Swarm, then click a numbered orange gate. Each type has its own cooldown.'
     : 'Choose a tower, tap near an empty ring point, then Confirm Placement. Use Inspect / Sell to view ownership or sell your towers.';
-  const runnerStatus = !ready || !socket.connected ? 'Waiting for connection'
-    : g.phase === 'lobby' ? 'Available after match starts'
-    : g.phase === 'countdown' ? 'Available after countdown'
-    : g.phase === 'finished' ? 'Match finished'
-    : g.runnerCooldown > 0 ? g.runnerCooldown.toFixed(1) + 's cooldown'
-    : g.money < C.enemies.Runner.cost ? 'Not enough money' : 'Ready';
-  $('runnerLabel').textContent = 'Runner · ' + C.enemies.Runner.cost + ' credits · ' + runnerStatus;
+  $('runnerLabel').textContent = enemyType + ' selected · ' + C.enemies[enemyType].cost + ' credits · ' + spawnBlockText(enemyType);
   $('runnerLabel').classList.toggle('hidden', !spawner);
   $('gateButtons').classList.toggle('hidden', !spawner);
+  $('enemyButtons').classList.toggle('hidden', !spawner);
+  enemyButtons.forEach(({ type, button }) => {
+    button.textContent = type + ' · ' + C.enemies[type].cost + ' · ' + spawnBlockText(type);
+    button.disabled = !canSpawn(type); button.classList.toggle('selected', type === enemyType);
+  });
   gates.forEach(button => { button.disabled = !canSpawn(); });
+  $('spawnDiagnostics').classList.toggle('hidden', !spawner);
+  const diagnostic = g.spawnDiagnostics;
+  $('spawnDiagnostics').textContent = 'Affordable cooldown time: ' + C.spawnTypes.map(type =>
+    type + ' ' + diagnostic.perTypeSeconds[type].toFixed(1) + 's').join(' · ') +
+    '. All affordable types blocked: ' + diagnostic.allAffordableSeconds.toFixed(1) + 's. Excludes cap blocks.';
+  $('repairControls').classList.toggle('hidden', role !== 'Defender');
+  $('repairButton').textContent = 'Core Repair · ' + C.repair.cost + ' · up to ' + C.repair.heal + ' HP';
+  $('repairButton').disabled = !canRepair();
+  const repairReasons = [];
+  if (g.coreHP >= C.match.coreHP) repairReasons.push('Core at full HP');
+  if (g.treasury < C.repair.cost) repairReasons.push('Not enough Shared Treasury');
+  if (g.repairCooldown > 0) repairReasons.push(g.repairCooldown.toFixed(1) + 's shared cooldown');
+  $('repairStatus').textContent = !ready || !socket.connected ? 'Waiting for connection'
+    : g.phase !== 'playing' ? (g.phase === 'finished' ? 'Match finished' : 'Available after countdown')
+    : repairing ? 'Repairing…' : repairReasons.join(' · ') || 'Ready. Full cost applies even for a partial heal.';
   if (!canSelectTower() || g.towers.some(t => t.snapId === selectedSnap)) selectedSnap = null;
   if (!canSelectTower()) { selectedTowerId = null; managing = false; }
   if (!selectedTower()) selectedTowerId = null;
@@ -270,7 +318,7 @@ function updateHUD() {
     : 'Point ' + (selectedSnap + 1) + ' selected. Confirm to spend ' + stats.cost + ' from the Shared Treasury.';
   const inspected = selectedTower();
   $('towerDetails').textContent = !inspected ? '' : inspected.type + ' · Point ' + (inspected.snapId + 1) +
-    ' · Owner: ' + inspected.ownerName + ' · ' + (inspected.disabled ? 'Paused: unpaid upkeep. Retry in ' : 'Active. Upkeep in ') +
+    ' · Owner: ' + inspected.ownerName + ' · ' + (inspected.disabled ? "paused: can't pay upkeep. Retry in " : 'Active. Upkeep in ') +
     inspected.upkeepIn.toFixed(1) + 's' + (inspected.sellLock > 0 ? ' · Sell locked ' + inspected.sellLock.toFixed(1) + 's' : '');
   $('sellButton').hidden = !managing;
   $('sellButton').disabled = !canSellTower();
@@ -278,8 +326,11 @@ function updateHUD() {
     : 'Sell ' + inspected.type + ' · +' + inspected.sellRefund;
   $('spendFeed').replaceChildren(...g.spendFeed.slice().reverse().map(entry => {
     const li = document.createElement('li');
-    li.textContent = entry.nickname + (entry.action === 'sold' ? ' sold a ' : ' placed a ') + entry.towerType +
-      ' ' + (entry.cost < 0 ? '+' : '-') + Math.abs(entry.cost);
+    li.textContent = entry.action === 'repaired' ? entry.nickname + ' repaired Core +' + entry.healed + ' HP -' + entry.cost
+      : entry.action === 'resumed' ? entry.nickname + "'s " + entry.towerType + ' resumed: upkeep paid -' + entry.cost
+      : entry.action === 'paused' ? entry.nickname + "'s " + entry.towerType + ": paused: can't pay upkeep"
+      : entry.nickname + (entry.action === 'sold' ? ' sold a ' : ' placed a ') + entry.towerType +
+        ' ' + (entry.cost < 0 ? '+' : '-') + Math.abs(entry.cost);
     return li;
   }));
   $('playerList').replaceChildren(...state.players.map(player => {
@@ -288,13 +339,15 @@ function updateHUD() {
     role.textContent = player.role + (!player.connected ? ' · reconnecting' : '');
     li.append(name, role); return li;
   }));
-  const scores = state.players.filter(p => p.role === 'Defender').map(p =>
-    g.scores.find(s => s.playerId === p.playerId) || { playerId: p.playerId, nickname: p.nickname, points: 0, kills: 0, damage: 0, assists: 0 });
+  const scores = state.players.filter(p => p.role !== 'Spectator').map(p =>
+    g.scores.find(s => s.playerId === p.playerId) || { playerId: p.playerId, nickname: p.nickname, role: p.role,
+      points: 0, kills: 0, damage: 0, assists: 0, coreDamage: 0, repairs: 0, winBonus: 0 });
   scores.push(...g.scores.filter(s => !state.players.some(p => p.playerId === s.playerId)));
   $('scoreList').replaceChildren(...scores.map(score => {
     const li = document.createElement('li');
-    li.textContent = score.nickname + ': ' + score.points + ' pts · ' + score.kills + ' kills · ' + score.damage +
-      ' damage · ' + score.assists + ' assists';
+    li.textContent = score.nickname + ': ' + score.points + ' pts · ' + (score.role === 'Spawner'
+      ? score.coreDamage + ' Core damage' : score.kills + ' kills · ' + score.damage + ' damage · ' + score.assists + ' slow assists · ' +
+        (score.repairs || 0) + ' repairs') + (score.winBonus ? ' · Win +' + score.winBonus : '');
     return li;
   }));
 }
@@ -356,13 +409,16 @@ function draw() {
     if (warnings.length) {
       const inward = Math.atan2(m.core.y - gate.y, m.core.x - gate.x);
       ctx.fillStyle = '#ffce8a';
-      ctx.fillText('Runner incoming ' + Math.max(0, Math.min(...warnings.map(w => w.remaining))).toFixed(1) + 's',
+      ctx.fillText([...new Set(warnings.map(w => w.type))].join(' + ') + ' incoming ' + Math.max(0, Math.min(...warnings.map(w => w.remaining))).toFixed(1) + 's',
         gate.x + Math.cos(inward) * 115, gate.y + Math.sin(inward) * 55);
     }
   });
   g.towers.forEach(t => {
     circle(t.x, t.y, C.ui.towerRadius, t.disabled ? '#65717b' : t.ownerId === credentials?.playerId ? '#54e6ff' : '#a7b6ff');
     ctx.fillStyle = '#11253b'; ctx.fillText(t.type[0], t.x, t.y + C.ui.healthBarHeight);
+    if (t.disabled) {
+      ctx.fillStyle = '#ff8d8d'; ctx.fillText('PAUSED', t.x, t.y + C.ui.towerRadius * 2);
+    }
     const shot = t.lastShot;
     if (shot && g.matchTime - shot.tick / C.network.tickHz <= C.ui.shotFlashSeconds) {
       ctx.strokeStyle = t.type === 'Freezer' ? '#82d8ff' : '#e9ff95'; ctx.lineWidth = 2;
@@ -375,13 +431,22 @@ function draw() {
       }
     }
   });
+  const groups = new Map();
   g.enemies.forEach(e => {
+    const key = e.type === 'Tiny' ? 'Tiny:' + e.x + ':' + e.y : e.id;
+    const group = groups.get(key) || { enemy: e, count: 0, hp: 0 };
+    group.count++; group.hp += e.hp; groups.set(key, group);
+  });
+  groups.forEach(({ enemy: e, count, hp }) => {
     const slowed = e.slows?.some(s => s.untilTick > g.matchTime * C.network.tickHz);
-    circle(e.x, e.y, C.ui.enemyRadius, slowed ? '#82d8ff' : '#ff6d81');
-    const x = e.x - C.ui.healthBarWidth / 2, y = e.y - C.ui.enemyRadius - C.ui.healthBarHeight * 2;
+    const style = C.ui.enemyStyles[e.type];
+    circle(e.x, e.y, style.radius, slowed ? '#82d8ff' : style.color);
+    ctx.fillStyle = '#edf7ff';
+    ctx.fillText(e.type + (count > 1 ? ' ×' + count : ''), e.x, e.y + style.radius + C.ui.towerRadius);
+    const x = e.x - C.ui.healthBarWidth / 2, y = e.y - style.radius - C.ui.healthBarHeight * 2;
     ctx.fillStyle = '#244563'; ctx.fillRect(x, y, C.ui.healthBarWidth, C.ui.healthBarHeight);
     ctx.fillStyle = '#e9ff95';
-    ctx.fillRect(x, y, C.ui.healthBarWidth * e.hp / C.enemies[e.type].hp, C.ui.healthBarHeight);
+    ctx.fillRect(x, y, C.ui.healthBarWidth * hp / (C.enemies[e.type].hp * count), C.ui.healthBarHeight);
   });
 }
 socket.connect();

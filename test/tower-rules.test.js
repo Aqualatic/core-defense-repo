@@ -33,7 +33,7 @@ test('Cannon splash reaches enemies outside tower range but not outside the spla
   assert.equal(g.enemies[0].hp, 20);
   assert.equal(g.towers[0].lastShot.targetId, 10);
   assert.equal(score(g, 'sam').damage, 40); assert.equal(score(g, 'sam').kills, 2);
-  assert.equal(score(g, 'sam').points, 60); // 40 actual damage + 2 * 10 kills, never 160 overkill damage.
+  assert.equal(score(g, 'sam').points, 50); // 40 actual damage * .25 + 2 * 20 kills.
   assert.ok(Math.abs(g.treasury - (40 + 5 / 30 + 12)) < 1e-8);
   g.enemies = []; advance(g, 59);
   g.enemies = [enemy(40, 954)]; G.step(g);
@@ -53,7 +53,7 @@ test('Freezer hits every enemy in range, deals zero damage and overlap never mul
     assert.ok(Math.abs(Math.hypot(g.enemies[i].x - before[i].x, g.enemies[i].y - before[i].y) - (i === 2 ? 4 : 2)) < 1e-8);
     assert.equal(g.enemies[i].hp, 20);
   }
-  assert.equal(score(g, 'sam').points, 0); assert.equal(score(g, 'lee').points, 0);
+  assert.equal(score(g, 'sam').points, 4); assert.equal(score(g, 'lee').points, 0);
 });
 
 test('slow lasts exactly 60 movement ticks, refreshes at pulse cadence and uses only the strongest active effect', () => {
@@ -76,16 +76,16 @@ test('slow lasts exactly 60 movement ticks, refreshes at pulse cadence and uses 
   G.step(refresh); assert.equal(refresh.enemies[0].slows[0].untilTick, 91);
 });
 
-test('assists are once per distinct Freezer owner on a slowed kill, not on pulses or Core hits', () => {
+test('simultaneous Freezers cannot duplicate application credit, and kills/Core hits add no assist points', () => {
   const g = game(); g.treasury = 1000;
   G.placeTower(g, sam, 0, 'Freezer'); G.placeTower(g, sam, 1, 'Freezer');
   G.placeTower(g, lee, 15, 'Freezer'); G.placeTower(g, lee, 2, 'Cannon');
   // All Freezers and Cannon cover this point; Cannon fires after the slow pulses.
   g.enemies = [enemy(10, 800, 410)]; G.step(g);
   assert.equal(g.enemies.length, 0);
-  assert.equal(score(g, 'sam').assists, 1); assert.equal(score(g, 'sam').points, 5);
+  assert.equal(score(g, 'sam').assists, 1); assert.equal(score(g, 'sam').points, 2);
   assert.equal(score(g, 'lee').kills, 1); assert.equal(score(g, 'lee').damage, 20);
-  assert.equal(score(g, 'lee').assists, 1); assert.equal(score(g, 'lee').points, 35);
+  assert.equal(score(g, 'lee').assists, 0); assert.equal(score(g, 'lee').points, 25);
   advance(g, 30); assert.equal(score(g, 'sam').assists, 1);
   g.enemies = [enemy(20, 600, 399)];
   g.enemies[0].slows = [{ towerId: 1, ownerId: 'sam', multiplier: 0.5, untilTick: g.matchTick + 60 }];
@@ -109,7 +109,7 @@ test('selling is owner-only after exactly one second, refunds once and never del
   const g = game(); G.placeTower(g, sam, 0, 'Cannon'); const id = g.towers[0].id;
   g.enemies = [enemy(10, 850)]; G.step(g); advance(g, 29);
   G.sellTower(g, sam, id);
-  assert.equal(score(g, 'sam').points, 30); assert.equal(score(g, 'sam').damage, 20);
+  assert.equal(score(g, 'sam').points, 25); assert.equal(score(g, 'sam').damage, 20);
 });
 
 test('upkeep is per tower from placement time; unpaid towers pause until a paid billing interval', () => {
@@ -127,14 +127,14 @@ test('upkeep is per tower from placement time; unpaid towers pause until a paid 
   assert.ok(paused.treasury >= 0);
 });
 
-test('sold Freezer effects can finish their duration; expired or weaker effects get no assist', () => {
+test('sold Freezer effects finish their duration; killing an enemy never creates extra assist awards', () => {
   const g = game(); g.treasury = 500;
   G.placeTower(g, sam, 0, 'Freezer'); advance(g, 30);
   const freezer = g.towers[0];
   g.enemies = [enemy(10, 850)]; G.step(g);
   assert.equal(G.sellTower(g, sam, freezer.id), null);
   G.placeTower(g, lee, 0, 'Cannon'); G.step(g);
-  assert.equal(score(g, 'sam').assists, 1); assert.equal(score(g, 'lee').points, 30);
+  assert.equal(score(g, 'sam').assists, 1); assert.equal(score(g, 'lee').points, 25);
   const fresh = game(); G.placeTower(fresh, sam, 0, 'Cannon');
   fresh.enemies = [enemy(10, 850)];
   fresh.enemies[0].slows = [
@@ -143,7 +143,7 @@ test('sold Freezer effects can finish their duration; expired or weaker effects 
     { ownerId: 'sam', multiplier: 0.5, untilTick: 50 }
   ];
   G.step(fresh);
-  assert.equal(score(fresh, 'lee'), undefined); assert.equal(score(fresh, 'sam').assists, 1);
+  assert.equal(score(fresh, 'lee').assists, 0); assert.equal(score(fresh, 'sam').assists, 0);
 });
 
 test('selling before upkeep stops future charges; finished matches freeze billing, slows and scoring', () => {

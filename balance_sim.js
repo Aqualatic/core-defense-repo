@@ -1,347 +1,194 @@
 const C = require('./shared/config');
-const DT = 0.1; // Analytical simulator resolution; the live server uses config.network.tickHz.
-const MATCH = C.match.durationSeconds;
-const CORE_MAX = Number(process.env.CORE_HP || C.match.coreHP);
-const CENTER = C.map.core;
-const RING = C.map.ringRadius;
-const WARNING = Number(process.env.SPAWN_WARNING || C.spawnWarningSeconds);
-const LIVE_CAP = C.match.liveEnemyCap;
-const GATES = C.map.spawnGates;
-const SNAP_POINTS = C.map.snapPoints;
+const { createEngine } = require('./server/game');
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
-const BASE_CONFIG = {
-  defenderStart: n => C.economy.defenderStart + C.economy.defenderStartPerExtra * (n - 1),
-  defenderIncome: C.economy.defenderIncome,
-  spawnerStart: C.economy.spawnerStart,
-  spawnerIncome: n => Number(process.env.SPAWNER_BASE || C.economy.spawnerIncomeBase) + Number(process.env.SPAWNER_PER_DEF || C.economy.spawnerIncomePerDefender) * n,
-  upkeep: C.upkeep.cost,
-  repairCost: C.repair.cost,
-  repairHeal: C.repair.heal,
-  repairCooldown: C.repair.cooldown,
-  enemies: {
-    Runner: C.enemies.Runner,
-    Tank: C.enemies.Tank,
-    Swarm: { ...C.enemies.Swarm, cost: Number(process.env.SWARM_COST || C.enemies.Swarm.cost), cooldown: Number(process.env.SWARM_CD || C.enemies.Swarm.cooldown) },
-    Tiny: { ...C.enemies.Tiny, coreDamage: Number(process.env.TINY_CORE_DAMAGE || C.enemies.Tiny.coreDamage) }
-  },
-  towers: {
-    Shooter: C.towers.Shooter,
-    Cannon: C.towers.Cannon,
-    Freezer: C.towers.Freezer
-  }
+const SPAWNERS = ['runner-spam', 'swarm-rush', 'mixed', 'weakest-gate', 'human-like'];
+const DEFENDERS = ['spread', 'clustered', 'lazy'];
+const SETTINGS = {
+  current: { upkeepSlope: C.upkeep.upkeepSlope, coreHitReward: C.economy.coreHitReward },
+  upkeepSlope0125: { upkeepSlope: 0.125, coreHitReward: C.economy.coreHitReward },
+  coreHitReward10: { upkeepSlope: C.upkeep.upkeepSlope, coreHitReward: 10 }
 };
-
+const DECISION_HZ = 10; // Bot reaction cadence, not the simulation tick rate.
+const spreadOrder = [0, 8, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15];
 function hashSeed(...parts) {
   let hash = 2166136261 >>> 0;
   for (const character of parts.join('|')) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16777619) >>> 0;
+    hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619) >>> 0;
   }
   return hash >>> 0;
 }
-
 function mulberry32(seed) {
   let state = seed >>> 0;
   return () => {
-    state |= 0;
-    state = (state + 0x6D2B79F5) | 0;
+    state |= 0; state = (state + 0x6D2B79F5) | 0;
     let t = Math.imul(state ^ state >>> 15, 1 | state);
     t = (t + Math.imul(t ^ t >>> 7, 61 | t)) ^ t;
     return ((t ^ t >>> 14) >>> 0) / 4294967296;
   };
 }
-
-function distance(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-
-function pathPointAtRadius(gate, radius) {
-  const dx = CENTER.x - gate.x;
-  const dy = CENTER.y - gate.y;
-  const length = Math.hypot(dx, dy);
-  return { x: CENTER.x - dx / length * radius, y: CENTER.y - dy / length * radius };
+function experimentConfig({ upkeepSlope = C.upkeep.upkeepSlope, coreHitReward = C.economy.coreHitReward } = {}) {
+  if (![upkeepSlope, coreHitReward].every(value => Number.isFinite(value) && value >= 0)) {
+    throw new Error('Experiment values must be finite nonnegative numbers.');
+  }
+  const config = structuredClone(C);
+  config.upkeep.upkeepSlope = upkeepSlope; config.economy.coreHitReward = coreHitReward;
+  return config;
 }
-
-function simulate({ n, spawnerStrategy, defenderStrategy, seed, config = BASE_CONFIG }) {
+function oppositeGate(gate, config = C) {
+  const a = config.map.spawnGates[gate], core = config.map.core;
+  const opposite = { x: 2 * core.x - a.x, y: 2 * core.y - a.y };
+  let best = 0, distance = Infinity;
+  config.map.spawnGates.forEach((p, i) => {
+    const d = Math.hypot(p.x - opposite.x, p.y - opposite.y);
+    if (d < distance) { distance = d; best = i; }
+  });
+  return best;
+}
+function roster(n) {
+  return [{ playerId: 'spawner', nickname: 'Spawner', role: 'Spawner', connected: true },
+    ...Array.from({ length: n }, (_, i) => ({ playerId: 'defender-' + i, nickname: 'Defender ' + (i + 1), role: 'Defender', connected: true }))];
+}
+function simulate({ n, spawnerStrategy = 'human-like', defenderStrategy = 'spread', seed = 1,
+  config = C, trace = false } = {}) {
+  if (!Number.isInteger(n) || n < 1 || n >= config.room.maxPlayers) throw new Error('Invalid Defender count.');
+  if (!SPAWNERS.includes(spawnerStrategy) || !DEFENDERS.includes(defenderStrategy)) throw new Error('Invalid strategy.');
+  const engine = createEngine(config), game = engine.newGame(), players = roster(n);
   const random = mulberry32(hashSeed(seed, n, spawnerStrategy, defenderStrategy));
-  const maxTowers = defenderStrategy === 'lazy' ? 6 : 16;
-  const defenderStart = config.defenderStart(n);
-  let time = 0;
-  let core = CORE_MAX;
-  let defenderMoney = defenderStart;
-  let spawnerMoney = config.spawnerStart;
-  let nextId = 1;
-  let winner = null;
-  let enemies = [];
-  let warnings = [];
-  let towers = [];
-  let cooldowns = { Runner: 0, Tank: 0, Swarm: 0 };
-  let surgeRemaining = 0;
-  let surgeReadyAt = 45;
-  let repairReadyAt = 0;
-  const swarmGate = Math.floor(random() * 8);
-  let previousGate = swarmGate;
-  const spreadOrder = [0, 8, 4, 12, 2, 6, 10, 14, 1, 3, 5, 7, 9, 11, 13, 15];
-  const towerOrder = defenderStrategy === 'clustered' ? Array.from({ length: 16 }, (_, i) => i) : spreadOrder;
-
-  function chooseWeakestGate() {
-    const scores = [];
-    for (let gateIndex = 0; gateIndex < GATES.length; gateIndex++) {
-      const crossing = pathPointAtRadius(GATES[gateIndex], RING);
-      let score = 0;
-      for (const tower of towers) {
-        if (distance(tower, crossing) <= config.towers[tower.kind].range) {
-          score += tower.kind === 'Cannon' ? 2 : 1;
-        }
-      }
-      scores.push(score);
-    }
-    const minimum = Math.min(...scores);
-    const candidates = scores.map((score, i) => score === minimum ? i : -1).filter(i => i >= 0);
+  // Exclude experiment settings from the seed: each setting receives paired seeds.
+  const primaryGate = Math.floor(random() * config.map.spawnGates.length);
+  let previousGate = primaryGate;
+  const maxTowers = defenderStrategy === 'lazy' ? 6 : config.map.snapPoints.length;
+  const towerOrder = defenderStrategy === 'clustered' ? config.map.snapPoints.map((_, i) => i) : spreadOrder;
+  const actions = trace ? [] : null;
+  const buckets = new Map();
+  function allow(player, event) {
+    // The socket transport rate-limits requests outside the game engine. Mirror
+    // those limits for bots; never bypass them with an unrealistic action burst.
+    const limits = { spawn: config.network.spawnRequestsPerSecond, place: config.network.placementRequestsPerSecond,
+      repair: config.network.repairRequestsPerSecond, general: config.network.generalRequestsPerSecond };
+    const windowTicks = config.network.rateWindowMs / 1000 * config.network.tickHz;
+    const take = (key, limit) => {
+      const bucket = (buckets.get(key) || []).filter(t => t > game.matchTick - windowTicks);
+      buckets.set(key, bucket);
+      if (bucket.length >= limit) return false;
+      bucket.push(game.matchTick); return true;
+    };
+    return take(player.playerId + ':general', limits.general) && take(player.playerId + ':' + event, limits[event]);
+  }
+  function act(player, type, payload) {
+    if (!allow(player, type)) return false;
+    const error = type === 'spawn' ? engine.spawnEnemy(game, player.role, payload.type, payload.gateId)
+      : type === 'place' ? engine.placeTower(game, player, payload.snapId, payload.type) : engine.repairCore(game, player);
+    if (error) return false;
+    if (actions) actions.push({ tick: game.matchTick, playerId: player.playerId, type, payload: { ...payload } });
+    return true;
+  }
+  function weakestGate() {
+    const strengths = config.map.spawnGates.map(gate => {
+      const dx = gate.x - config.map.core.x, dy = gate.y - config.map.core.y, length = Math.hypot(dx, dy);
+      const crossing = { x: config.map.core.x + dx / length * config.map.ringRadius,
+        y: config.map.core.y + dy / length * config.map.ringRadius };
+      return game.towers.reduce((sum, tower) => sum + (!tower.disabled &&
+        Math.hypot(tower.x - crossing.x, tower.y - crossing.y) <= config.towers[tower.type].range
+        ? tower.type === 'Cannon' ? 2 : 1 : 0), 0);
+    });
+    const minimum = Math.min(...strengths), candidates = strengths.flatMap((s, i) => s === minimum ? [i] : []);
     return candidates[Math.floor(random() * candidates.length)];
   }
-
   function chooseGate(type) {
-    if (spawnerStrategy === 'runner-spam') return Math.floor(random() * 8);
-    if (spawnerStrategy === 'swarm-rush') return swarmGate;
-    if (spawnerStrategy === 'mixed') return type === 'Runner' ? (swarmGate + 4) % 8 : swarmGate;
+    if (spawnerStrategy === 'runner-spam') return Math.floor(random() * config.map.spawnGates.length);
+    if (spawnerStrategy === 'swarm-rush') return primaryGate;
+    if (spawnerStrategy === 'mixed') return type === 'Runner' ? oppositeGate(primaryGate, config) : primaryGate;
     if (spawnerStrategy === 'human-like') {
-      const gate = random() < 0.65 ? previousGate : Math.floor(random() * 8);
-      previousGate = gate;
-      return gate;
+      previousGate = random() < 0.65 ? previousGate : Math.floor(random() * config.map.spawnGates.length);
+      return previousGate;
     }
-    return chooseWeakestGate();
+    return weakestGate();
   }
-
-  function placeTower(kind) {
-    const spec = config.towers[kind];
-    if (towers.length >= maxTowers || defenderMoney < spec.cost) return false;
-    const position = SNAP_POINTS[towerOrder[towers.length]];
-    defenderMoney -= spec.cost;
-    towers.push({
-      kind,
-      x: position.x,
-      y: position.y,
-      nextFireAt: time,
-      nextUpkeepAt: time + 10,
-      disabled: false
-    });
-    return true;
-  }
-
-  function buildDefenderTowers() {
-    while (towers.length < maxTowers) {
-      let kind = null;
-      if (!towers.some(t => t.kind === 'Cannon') && defenderMoney >= config.towers.Cannon.cost) kind = 'Cannon';
-      else if (!towers.some(t => t.kind === 'Shooter') && defenderMoney >= config.towers.Shooter.cost) kind = 'Shooter';
-      else if (!towers.some(t => t.kind === 'Freezer') && defenderMoney >= config.towers.Freezer.cost) kind = 'Freezer';
-      else if (defenderMoney >= config.towers.Shooter.cost) kind = 'Shooter';
-      else break;
-      if (!placeTower(kind)) break;
+  function spawn() {
+    const priority = spawnerStrategy === 'runner-spam' ? ['Runner'] : spawnerStrategy === 'swarm-rush' ? ['Swarm']
+      : spawnerStrategy === 'mixed' ? ['Tank', 'Runner'] : ['Tank', 'Swarm', 'Runner'];
+    // At most one accepted spawn per type at a decision; engine cooldowns apply.
+    for (const type of priority) {
+      if (engine.spawnStatus(game, type).ready) act(players[0], 'spawn', { type, gateId: chooseGate(type) });
     }
   }
-
-  function activateSurge() {
-    if (time >= surgeReadyAt && surgeRemaining === 0) {
-      surgeRemaining = 3;
-      surgeReadyAt = time + 45;
-      return true;
-    }
-    return false;
-  }
-
-  function clickSpawn(type) {
-    const spec = config.enemies[type];
-    if (spawnerMoney < spec.cost || time < cooldowns[type]) return false;
-    if (enemies.length + warnings.length >= LIVE_CAP) return false;
-    const surged = surgeRemaining > 0;
-    spawnerMoney -= spec.cost;
-    cooldowns[type] = time + spec.cooldown;
-    if (surged) surgeRemaining--;
-    warnings.push({ type, gate: chooseGate(type), appearsAt: time + WARNING, surged });
-    return true;
-  }
-
-  function spawnerAct() {
-    if (time === 45) activateSurge();
-    if (spawnerStrategy === 'swarm-rush' && time >= 45 && surgeRemaining === 0) activateSurge();
-
-    for (let i = 0; i < 4; i++) {
-      let type = null;
-      if (spawnerStrategy === 'runner-spam') {
-        if (spawnerMoney >= 20 && time >= cooldowns.Runner) type = 'Runner';
-      } else if (spawnerStrategy === 'swarm-rush') {
-        if (spawnerMoney >= 60 && time >= cooldowns.Swarm) type = 'Swarm';
-      } else if (spawnerStrategy === 'mixed') {
-        if (spawnerMoney >= 80 && time >= cooldowns.Tank) type = 'Tank';
-        else if (spawnerMoney >= 20 && time >= cooldowns.Runner) type = 'Runner';
-      } else if (spawnerStrategy === 'human-like') {
-        if (spawnerMoney >= 80 && time >= cooldowns.Tank) type = 'Tank';
-        else if (spawnerMoney >= 60 && time >= cooldowns.Swarm) type = 'Swarm';
-        else if (spawnerMoney >= 20 && time >= cooldowns.Runner) type = 'Runner';
-      } else {
-        if (spawnerMoney >= 80 && time >= cooldowns.Tank) type = 'Tank';
-        else if (spawnerMoney >= 60 && time >= cooldowns.Swarm) type = 'Swarm';
-        else if (spawnerMoney >= 20 && time >= cooldowns.Runner) type = 'Runner';
-      }
-      if (!type || !clickSpawn(type)) break;
-    }
-  }
-
-  function releaseWarnings() {
-    for (let i = warnings.length - 1; i >= 0; i--) {
-      const warning = warnings[i];
-      if (time < warning.appearsAt) continue;
-      const spec = config.enemies[warning.type];
-      const gate = GATES[warning.gate];
-      enemies.push({
-        id: nextId++,
-        type: warning.type,
-        hp: spec.hp,
-        x: gate.x,
-        y: gate.y,
-        baseSpeed: spec.speed,
-        speedMultiplier: warning.surged ? 1.25 : 1,
-        coreDamage: spec.coreDamage,
-        bounty: spec.bounty,
-        slowUntil: 0
-      });
-      warnings.splice(i, 1);
-    }
-  }
-
-  function moveEnemies() {
-    for (let i = enemies.length - 1; i >= 0; i--) {
-      const enemy = enemies[i];
-      const dx = CENTER.x - enemy.x;
-      const dy = CENTER.y - enemy.y;
-      const length = Math.hypot(dx, dy);
-      const speed = enemy.baseSpeed * enemy.speedMultiplier * (enemy.slowUntil > time ? 0.5 : 1);
-      const movement = speed * DT;
-      if (length <= movement) {
-        core -= enemy.coreDamage;
-        spawnerMoney += 5;
-        enemies.splice(i, 1);
-      } else {
-        enemy.x += dx / length * movement;
-        enemy.y += dy / length * movement;
-      }
-    }
-  }
-
-  function splitSwarms() {
-    for (let i = enemies.length - 1; i >= 0; i--) {
-      const enemy = enemies[i];
-      if (enemy.type !== 'Swarm' || distance(enemy, CENTER) > 150) continue;
-      enemies.splice(i, 1);
-      for (let j = 0; j < 5; j++) {
-        enemies.push({ id: nextId++, type: 'Tiny', hp: 15, x: enemy.x, y: enemy.y,
-          baseSpeed: 90, speedMultiplier: 1, coreDamage: 2, bounty: 1, slowUntil: 0 });
-      }
-    }
-  }
-
-  function towersAct() {
-    for (const tower of towers) {
-      if (tower.disabled) continue;
-      const spec = config.towers[tower.kind];
-      const inRange = enemies.filter(enemy => distance(tower, enemy) <= spec.range);
-      if (tower.kind === 'Freezer') {
-        for (const enemy of inRange) enemy.slowUntil = Math.max(enemy.slowUntil, time + 2);
-        continue;
-      }
-      if (!inRange.length || time < tower.nextFireAt) continue;
-      inRange.sort((a, b) => distance(a, CENTER) - distance(b, CENTER) || a.id - b.id);
-      const primary = inRange[0];
-      tower.nextFireAt = time + 1 / spec.rate;
-      const hitList = tower.kind === 'Cannon'
-        ? enemies.filter(enemy => distance(enemy, primary) <= 45)
-        : [primary];
-      for (const enemy of hitList) enemy.hp -= spec.damage;
-    }
-  }
-
-  function collectKills() {
-    for (let i = enemies.length - 1; i >= 0; i--) {
-      if (enemies[i].hp <= 0) {
-        const dead = enemies[i];
-        if (dead.type === 'Swarm') {
-          for (let j = 0; j < 5; j++) {
-            enemies.push({ id: nextId++, type: 'Tiny', hp: 15, x: dead.x, y: dead.y,
-              baseSpeed: 90, speedMultiplier: 1, coreDamage: 2, bounty: 1, slowUntil: 0 });
-          }
+  function defend() {
+    // Retain the prior purchase policy: buy missing Cannon/Shooter/Freezer when
+    // affordable, otherwise Shooter; do not save specifically for a Freezer.
+    while (game.towers.length < maxTowers) {
+      let type;
+      for (const candidate of ['Cannon', 'Shooter', 'Freezer']) {
+        if (!game.towers.some(t => t.type === candidate) && game.treasury >= config.towers[candidate].cost) {
+          type = candidate; break;
         }
-        defenderMoney += dead.bounty; // Tower-killed parents pay 18 AND split; auto-splits do not pay.
-        enemies.splice(i, 1);
       }
+      if (!type && game.treasury >= config.towers.Shooter.cost) type = 'Shooter';
+      if (!type || !act(players[1], 'place', { type, snapId: towerOrder[game.towers.length] })) break;
     }
+    if (game.phase === 'playing' && game.coreHP < config.match.coreHP && game.treasury >= config.repair.cost &&
+        game.matchTick >= game.repairReadyTick) act(players[1], 'repair', {});
   }
-
-  function repairCore() {
-    if (core < CORE_MAX && time >= repairReadyAt && defenderMoney >= config.repairCost) {
-      defenderMoney -= config.repairCost;
-      core = Math.min(CORE_MAX, core + config.repairHeal);
-      repairReadyAt = time + config.repairCooldown;
-    }
+  engine.start(game, players);
+  while (game.phase === 'countdown') engine.step(game);
+  const decisionTicks = config.network.tickHz / DECISION_HZ;
+  if (!Number.isInteger(decisionTicks)) throw new Error('Bot decision cadence must divide tickHz.');
+  while (game.phase === 'playing') {
+    if (game.matchTick % decisionTicks === 0) { spawn(); defend(); }
+    engine.step(game); // The only movement/combat/economy/win implementation.
   }
-
-  function payUpkeep() {
-    for (const tower of towers) {
-      if (time < tower.nextUpkeepAt) continue;
-      while (time >= tower.nextUpkeepAt) tower.nextUpkeepAt += 10;
-      if (defenderMoney >= config.upkeep) {
-        defenderMoney -= config.upkeep;
-        tower.disabled = false;
-      } else tower.disabled = true;
-    }
-  }
-
-  for (let step = 0; step < MATCH / DT && !winner; step++) {
-    time = Number((step * DT).toFixed(1));
-    defenderMoney += config.defenderIncome * DT;
-    spawnerMoney += config.spawnerIncome(n) * DT;
-    spawnerAct();
-    releaseWarnings();
-    buildDefenderTowers();
-    moveEnemies();
-    splitSwarms();
-    towersAct();
-    collectKills();
-    repairCore();
-    payUpkeep();
-    if (core <= 0) { core = 0; winner = 'Spawner'; }
-  }
-
-  return { winner: winner || 'Defenders', core: Math.ceil(core), treasury: Number(defenderMoney.toFixed(2)) };
+  const reachedTimeLimit = game.matchTick === config.match.durationSeconds * config.network.tickHz;
+  return { n, spawnerStrategy, defenderStrategy, seed, winner: game.winner,
+    elapsedSeconds: game.matchTick / config.network.tickHz, reachedTimeLimit,
+    coreHP: game.coreHP, treasuryAtFiveMinutes: reachedTimeLimit ? game.treasury : null,
+    economy: engine.economySummary(game), cooldowns: engine.spawnDiagnostics(game), ...(actions ? { actions } : {}) };
 }
-
-function batch(config, spawnerStrategy, defenderStrategy, n) {
-  let defenderWins = 0, coreTotal = 0, treasuryTotal = 0;
-  for (let run = 0; run < 50; run++) {
-    const result = simulate({
-      config, n, spawnerStrategy, defenderStrategy,
-      seed: 100000 + n * 10000 + run * 7919
-    });
-    if (result.winner === 'Defenders') defenderWins++;
-    coreTotal += result.core;
-    treasuryTotal += result.treasury;
+function summarize(matches) {
+  const mean = (rows, select) => rows.length ? Number((rows.reduce((sum, r) => sum + select(r), 0) / rows.length).toFixed(2)) : null;
+  function group(rows) {
+    return { count: rows.length, meanTreasury: mean(rows, r => r.economy.defenders.finalBalance),
+      meanSpawnerMoney: mean(rows, r => r.economy.spawner.finalBalance), meanCoreHP: mean(rows, r => r.coreHP),
+      meanEndSeconds: mean(rows, r => r.elapsedSeconds) };
   }
-  return {
-    spawnerStrategy,
-    defenderStrategy,
-    n,
-    defenderWinRate: defenderWins / 50,
-    averageCoreHP: Number((coreTotal / 50).toFixed(1)),
-    averageTreasury: Number((treasuryTotal / 50).toFixed(1))
-  };
+  return { runs: matches.length, defenderWinRate: matches.filter(m => m.winner === 'Defender').length / matches.length,
+    atFiveMinutes: group(matches.filter(m => m.reachedTimeLimit)), earlyEndings: group(matches.filter(m => !m.reachedTimeLimit)) };
 }
-
-const strategies = ['runner-spam', 'swarm-rush', 'mixed', 'weakest-gate', 'human-like'];
-const defenderStrategies = ['spread', 'clustered', 'lazy'];
-const rows = [];
-for (const spawnerStrategy of strategies) {
-  for (const defenderStrategy of defenderStrategies) {
-    for (const n of [1, 3, 7]) {
-      rows.push(batch(BASE_CONFIG, spawnerStrategy, defenderStrategy, n));
+function runGrid({ runs = 50, settings = Object.keys(SETTINGS), spawners = SPAWNERS, defenders = ['spread'], ns = [1,3,7] } = {}) {
+  if (!Number.isInteger(runs) || runs < 1) throw new Error('runs must be a positive integer.');
+  const results = [], matches = [];
+  for (const setting of settings) {
+    if (!Object.hasOwn(SETTINGS, setting)) throw new Error('Invalid setting: ' + setting);
+    const config = experimentConfig(SETTINGS[setting]);
+    for (const spawnerStrategy of spawners) for (const defenderStrategy of defenders) for (const n of ns) {
+      const group = Array.from({ length: runs }, (_, run) => ({ setting,
+        ...simulate({ n, spawnerStrategy, defenderStrategy, config, seed: 100000 + n * 10000 + run * 7919 }) }));
+      results.push({ setting, spawnerStrategy, defenderStrategy, n, ...summarize(group) }); matches.push(...group);
     }
   }
+  const digest = file => createHash('sha256').update(fs.readFileSync(path.join(__dirname, file))).digest('hex');
+  return { metadata: { engine: 'server/game.js', tickHz: C.network.tickHz, botDecisionHz: DECISION_HZ, runsPerCombination: runs,
+    settings: Object.fromEntries(settings.map(s => [s, SETTINGS[s]])), spawners, defenders, ns,
+    seedFormula: '100000 + N * 10000 + runIndex * 7919; hash(seed,N,spawnerStrategy,defenderStrategy), mulberry32',
+    sourceHashes: { engine: digest('server/game.js'), config: digest('shared/config.js'), simulator: digest('balance_sim.js') },
+    notes: 'Paired seeds across settings. No Surge: absent in current playable engine. 5:00 means elapsedSeconds=300, not all final balances. One scripted team controller; this is not human playtest data.' },
+    results, matches };
 }
-console.log(JSON.stringify(rows, null, 2));
+function main(args) {
+  const options = {};
+  for (const arg of args) {
+    const [key, value, extra] = arg.split('=');
+    if (!value || extra !== undefined) throw new Error('Use --runs=50, --settings=current, --spawners=human-like, --defenders=spread, --ns=1,3,7.');
+    if (key === '--runs') options.runs = Number(value);
+    else if (['--settings','--spawners','--defenders'].includes(key)) options[key.slice(2)] = value.split(',');
+    else if (key === '--ns') options.ns = value.split(',').map(Number);
+    else throw new Error('Unknown option: ' + key);
+  }
+  console.log(JSON.stringify(runGrid(options), null, 2));
+}
+if (require.main === module) {
+  try { main(process.argv.slice(2)); } catch (error) { console.error(error.message); process.exitCode = 1; }
+}
+module.exports = { simulate, summarize, runGrid, experimentConfig, oppositeGate, roster, SETTINGS, SPAWNERS, DEFENDERS };

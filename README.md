@@ -1,8 +1,10 @@
-# Core Defense — milestone 4
-This version adds Cannon and Freezer placement, owner-only selling, tower upkeep, and personal damage/kill/Freezer-assist scores. It retains the 16 snap points, shared treasury, spend feed, rooms, stable identities, reconnect, countdown and authoritative Runner loop. Other enemies, Repair, Surge, end-screen MVPs and rematches remain later work. No balance grid was rerun or tuned. Numeric scoring defaults are explicitly provisional because the earlier scoring table was not available in this project.
+# Core Defense — milestone 5 (economy measurement patch)
+This version adds Tank, Swarm and Tiny enemies, reserved enemy capacity, Core Repair and Spawner cooldown diagnostics. It also corrects scoring/Freezer assists and makes unpaid upkeep visible. Existing placement, ownership, selling, shared treasury, reconnect and local/cross-origin transport remain intact. Existing enemy/tower costs, HP, speeds, income and spawn cooldowns have not been tuned. Surge, role selection/rotation, end-screen MVPs and Play Again remain later work. Nothing was deployed.
+
+Version 0.5.1 adds opt-in upkeep scaling, complete match economy records and a simulator driven by the live engine. Live defaults remain unchanged. This is still milestone 5.
 
 ## Run locally
-Install Node.js 22 or 24 (Node 24 is recommended). Extract this project and open a terminal in the folder containing package.json.
+Install Node.js 22 or 24 (Node 24 is recommended). Stop the previous server, extract this project and open a terminal in the folder containing package.json.
 
 ```sh
 npm ci
@@ -11,77 +13,143 @@ npm start
 
 Open http://localhost:3000. GET http://localhost:3000/health returns plain text `ok`.
 To use another port, set the PORT environment variable before starting.
-Run `npm test` for deterministic game-loop and two-client Socket.IO tests.
+Run `npm test` for deterministic engine, client and real Socket.IO tests.
+For the phone test, reuse the same working address and allowed-origin configuration that passed milestone 4; use landscape. Origin rules are unchanged.
 
-For the phone test, reuse the same working address and origin configuration that passed milestone 3. This milestone does not alter origin checks.
+## Normal + incognito test
+1. In a normal window open the base URL, enter a nickname and create a room. This player is Spawner and host. In incognito open the BASE URL separately (do not copy the player-specific URL), enter another nickname and join with the code. This player is Defender. Keep the incognito session open for refresh testing.
+2. Start from the host. Both screens show the 10-second countdown, frozen money and a five-minute match timer. No spawning, placement, selling or Repair works until play starts. Then the headings say Attack the Core and Defend the Core respectively. Only the Spawner gets enemy buttons; only the Defender gets tower/sell/Repair controls.
+3. Defender: select Shooter, tap the top ring point (point 13 directly below gate 1), then Confirm Placement. Selection alone does not spend. The tower costs 50, appears cyan to its owner and lavender to others, and records a shared spend-feed entry. Spawner: leave Runner selected, click top gate 1. Expect an immediate 20 charge, 1.5-second per-type cooldown, two-second warning, then a Runner. It dies in two Shooter hits: 20 actual damage, 1 kill, **25 points** to the owner and **6 bounty** to the shared treasury. Passive income continues, so the treasury also changes between snapshots.
+4. Send a Runner from unguarded bottom gate 3. About 5.1 seconds after acceptance, Core HP drops to 97; Spawner gets +5 money and **15 points** for 3 actual Core damage. Defender: click Core Repair. It costs the full **60**, heals **3** to 100, awards **10 points**, and starts the **20-second shared cooldown**. The spend feed says who repaired and how much was healed. At full HP it is disabled/rejected without charge. Send another Runner during the cooldown: Repair stays blocked even when the Core is damaged again.
+5. Refresh both CURRENT URLs during active play, one at a time. Expect the same identity, role, towers, scores, enemy warnings, shared Repair cooldown and Spawner diagnostic totals; no duplicate player, purchase or reset. Tower selection/inspection is cleared. Reclaim within 120 seconds while the original room still exists. Host may transfer to the other connected player and is not automatically reclaimed. A countdown disconnect deliberately returns the room to the lobby; a playing-phase disconnect does not pause it.
+6. To test another setup, open the base URL and create a fresh room. A third browser/profile joining BEFORE Start gives a second Defender. New arrivals after Start are spectators. Play Again is not implemented yet.
 
-## Two-window test
-1. Stop the old server, start this version, and reload both pages. Window A: in a normal browser window, open http://localhost:3000, enter a nickname and create a room. It shows Spawner and host.
-2. Window B: in incognito, open the BASE URL separately (do not copy A's player URL), enter a second nickname and join the room code. It shows Defender. Both show the same roster, map, Core HP, timer and **Shared Treasury**. Keep incognito open throughout the refresh test.
-3. A: click Start match. Both show a 10-second countdown with frozen money and five-minute match timer. Confirm Placement is disabled; placement and spawning open only after the countdown.
-4. B: tap/click near the point at the top of the ring (point 13, directly below gate 1). The nearest empty point highlights with its range circle. Selection alone does not spend. Click **Confirm Placement · 50**. A cyan Shooter appears for its owner, lavender on A; both see one tower, the 50-credit deduction and `YourName placed a Shooter -50` in the spend feed. Treasury starts at 150 with one Defender and grows at 5/sec, so it will already be above 100 if you take a moment to place.
-5. A: click top gate 1. The server charges 20 immediately, starts its 1.5-second Runner cooldown and shows a 2-second warning to both clients. The Runner appears, approaches the Shooter, flashes a shot line and loses HP from 20 to 8. A second shot about half a second later kills it. It disappears before reaching the Core; Core HP stays 100. Both treasuries receive the same +6 bounty on top of passive income. The kill occurs about 2.83 seconds after the accepted spawn with this exact placement.
-6. With no other towers placed, send a Runner from bottom gate 3. The top Shooter cannot reach that approach; the Runner disappears at the Core and HP drops to 97 about 5.1 seconds after the accepted spawn. A Core hit still pays the Spawner +5.
-7. B: select other points and buy Shooters. Each costs 50 from the same treasury. Below 50, Confirm Placement is grayed out with an insufficient-funds message. Tapping an occupied point selects the nearest empty point instead. All 16 points are available regardless of Defender count. The server rejects occupied points, invalid IDs, wrong roles and insufficient funds without charging.
-8. Refresh B during active play using its current URL. Expect the same Defender identity, owned cyan towers, spend feed, treasury and room; no duplicate player or second charge. Towers continue firing during a disconnect. A temporary selection is cleared, so tap a point again before the next placement. Refresh A too: Spawner identity/controls return, and both still agree. Host transfers when its current owner disconnects; reconnecting does not steal host rights back.
-9. For an offline test, disconnect one window briefly, then restore it within 120 seconds. The other shows that player as reconnecting. After 120 seconds, the reservation/token expires. A countdown disconnect returns the room to the lobby; a playing-phase disconnect does not pause the match. New arrivals during countdown/play are spectators and cannot place or spawn.
-10. Optional shared-spend race test: before starting a new room, join a second Defender from another browser profile. Both select the same empty point and confirm together. Exactly one purchase succeeds, one tower appears and only 50 is deducted; the other request is rejected. With two Defenders, starting treasury is 160 and team income is still 5/sec.
-11. To test a fresh match after the simple finished status, open the base URL and create another room. Play Again is a later milestone.
+Browser storage must be allowed. Use the same origin consistently: localhost and 127.0.0.1 have different storage. A copied player URL without its locally stored token cannot reclaim that player. Closing all private windows clears their storage.
 
-Browser storage must be allowed for refresh recovery. Use the same origin consistently (localhost and 127.0.0.1 have different storage). A copied player URL without its local token cannot reclaim that player.
+## New enemies and Swarm edge cases
+Use a fresh room per setup, with no unrelated attackers/towers so score and bounty changes can be attributed.
 
-## Milestone 4 local tests
-Use the normal window as Spawner and incognito as Defender. Start a fresh room for each setup. A third browser/profile joining BEFORE Start gives you a second Defender for the ownership/assist split check.
+| Enemy | Spawn cost | HP | Speed (px/s) | Core damage | Cooldown (s) | Kill bounty | Kill points |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Runner | 20 | 20 | 120 | 3 | 1.5 | 6 | 20 |
+| Tank | 80 | 300 | 35 | 15 | 8 | 24 | 20 |
+| Swarm parent | 60 | 100 | 65 | 0 (splits first) | 6 | 18 on tower kill only | 20 on tower kill only |
+| Tiny | Not directly spawnable | 15 | 90 | 2 | — | 1 | 5 |
 
-1. **Cannon:** choose Cannon (120), tap the top point (13) and Confirm Placement. Expect a tower marked C, the correct owner under Inspect / Sell, and `Name placed a Cannon -120`. Send a Runner from gate 1. It dies in one hit; a splash circle appears. The owner gets 20 actual damage, 1 kill and 30 points; the shared treasury gets 6. Fire cooldown is 2 seconds. Automated tests cover multiple victims within 45px, including victims outside the tower's 150px targeting range.
-2. **Freezer:** in a fresh room, place a Freezer (90) at point 13, then a Shooter (50) at point 12, the adjacent point to its left. Send a Runner through gate 1. It turns blue and travels at 60px/sec while slowed, then dies to the Shooter. With one owner, expect 20 damage, 1 kill, 1 assist and 35 points; treasury gets 6. With two Defenders owning one tower each, the Freezer owner gets 5 points/1 assist/0 damage, and the Shooter owner gets 30 points/1 kill/20 damage. Freezer alone never damages an enemy or awards points just for pulsing.
-3. **Overlap:** place a second Freezer near the first when affordable. Overlapping pulses keep enemies at 50% speed, never 25%. A pulse hits every in-range enemy once per second. Leaving range stops refreshes; the last slow lasts 2 seconds. A slowed Runner that reaches the Core awards no kill/assist points.
-4. **Sell:** immediately after placing, click Inspect / Sell and tap that tower. The Sell button stays disabled until 1 second has elapsed since placement, then shows +25 Shooter, +60 Cannon or +45 Freezer. Selling removes the tower, frees the point and adds exactly one refund to the shared treasury/feed. Rapid duplicate clicks cannot refund twice. Rebuying pays full cost and starts a new sell lock. Scores already earned remain.
-5. **Ownership:** inspect the other Defender's tower. Its owner is named and the button says Owner only. It stays unsellable by you even if you become host or its owner disconnects. A mid-match spectator has no placement/selling controls.
-6. **Upkeep:** inspect a tower's countdown. First bill is 10 seconds after its placement, then every 10 seconds. Each bill deducts 1 from the shared treasury. With three towers bought at match time zero and no kills/sales, treasury is 47 at 0:10: 150 - 150 + 50 income - 3 upkeep. Another 0.6 seconds earns the missing 3 for a Shooter. In real manual placement, bill times are staggered. Selling stops that tower's future bills.
-7. **Refresh:** refresh both current URLs during play, keeping incognito open. Ownership, scores, treasury, sell-lock age, upkeep schedule and current slow effects must survive; there must be no new charge or player. Tower selection/inspection resets. Paid towers keep acting while their owner is disconnected.
+1. **Tank:** choose Tank, then top gate 1. Cost 80 and its eight-second cooldown begin at acceptance. After the two-second warning, a visibly larger Tank with a 300-HP bar moves at 35px/sec. In an undefended lane it reaches the Core after about 12.6 seconds including warning, deals 15 and disappears. Spawner gets 75 score and +5 money. A full-health Tank killed entirely by one owner's towers gives that owner 95 points (300 × 0.25 + 20) and treasury +24.
+2. **Automatic split:** no towers. Choose Swarm and gate 1. After two seconds it appears, then splits at or inside 150px from the Core (about 5.4 seconds after acceptance). The parent disappears and five 15-HP Tinies appear at its position. Coincident Tinies show **Tiny ×5**; each is still an independent server enemy. No 18 bounty or parent kill credit is awarded. Slot use stays at 5. If ignored, the five Tinies deal 10 total Core damage; Spawner earns 50 score and +25 hit income.
+3. **Tower-kill split:** place a Cannon at top point 13; wait until the treasury can afford a second Cannon, then place it at adjacent point 12 (upper-left). Start the attack only after both exist. Send one Swarm from top gate 1. The Cannons kill its parent before the 150px line, paying **18** and creating all five Tinies at the parent's location. The killing shot does not also damage newly created children; later shots, including another tower later that tick, can. A later Cannon splash kills all five for another **5 total bounty**. One owner of both Cannons ends with **6 kills, 175 actual damage and 88.75 points**, with Core HP 100. Combined bounty is **23**, less than a Tank's 24. Income and upkeep are additional treasury changes.
+4. **Same-tick boundary:** movement/proximity splitting happens before tower fire. If the parent enters 150px on the same tick a Cannon becomes ready, it splits automatically first: no parent bounty or kill; the Cannon may then hit the Tinies. Existing parent damage credit remains. Children start at full HP with no inherited slow or assist timer.
+5. **Capacity:** HUD shows weighted **Enemy slots: used / 80**, including warnings. Each Runner/Tank/Tiny uses 1. Each pending or living Swarm consumes **5 total slots**, reserving its eventual children; it does not consume 6. At 75 used, one Swarm is accepted and reserves the remaining 5 immediately. At 76 used, Swarm is blocked but a one-slot enemy may fit. At 80 all spawns are blocked. Rejected spawns take neither money nor cooldown. Both split paths replace the parent's five-slot reservation with exactly five Tinies, even at full capacity; kills/Core hits release slots. Sixteen pending Swarms reserve all 80 slots and can later become 80 Tinies without overflow.
 
-Unpaid-upkeep recovery and exact simultaneous-action boundaries are deterministic automated tests. To inspect an unpaid tower in gameplay, it appears gray and its inspector says Paused: unpaid upkeep; it retries at its next 10-second bill, not as soon as money trickles in. No debt or partial charge is taken.
+The 75/76/80 boundaries are hard to reach with normal income and cooldowns. Test them without changing gameplay config or exposing debug controls:
 
-## Milestone 4 rule cross-check
-| Rule | Implemented behavior to check |
+```sh
+node --test test/enemies.test.js test/repair-diagnostics.test.js test/scoring-corrections.test.js
+```
+
+These fixtures exercise both split paths at capacity, same-tick proximity/shot ordering, no double bounty, partial Repair, exact cooldown expiry, award caps and upkeep recovery against the real server engine. They are deterministic rule tests, not balance simulations.
+
+## Corrected scoring, selling and upkeep
+All numeric rules are in `shared/config.js`.
+
+| Rule | Implemented behavior |
 | --- | --- |
-| Cannon | 120 cost, 150 range, 80 damage, 0.5 shots/sec, 45px splash. Primary target is closest to Core among enemies in range. Splash damages every enemy within the primary target's circle, even outside tower range. |
-| Freezer | 90 cost, 100 range, 1 pulse/sec, 0 damage, 50% speed for 2 seconds. All in-range enemies receive the pulse. Strongest active slow wins; equal slows refresh their own expiry and never multiply. |
-| Personal credit | Actual HP removed goes to the damage-dealing tower's owner. The killing tower's owner receives the kill; bounty goes only to the shared treasury. Overkill is not damage credit. Scores persist after sales and disconnects. |
-| **Provisional scoring** | 1 point per actual HP damaged, 10 per Runner kill, 5 per Freezer assist. These were not recovered from the earlier approved table; verify them before treating them as exact historical spec matches. All are in `shared/config.js`. Only Runner kill points are active in this milestone. |
-| Assist attribution | Once per distinct owner of a strongest, still-active slow on a killed enemy. Multiple Freezers from one owner do not multiply points. Equal strongest slows from different owners each qualify; an owner may assist their own shooting tower. Expired/weaker slows, pulses without a kill and Core hits award no assist. An already-applied slow can finish after its source is sold. |
-| Selling | Latest instruction is strictly owner-only; no host exception, including after the owner's 120-second reservation expires. The older host-sells-expired-owner suggestion is superseded. Refund is 50% of the original price actually paid, into the shared treasury, after the 1-second lock. Unclaimed towers remain until the match ends. |
-| Sell/rebuy | Costs half the original price overall. Rebuying creates a new tower with a fresh sell lock, firing readiness and upkeep schedule. No free refund or score reset is possible; buying a fresh Cannon can fire sooner than waiting out the old cooldown, at a 60-credit loss. |
-| Upkeep | 1 per tower per 10 seconds measured from placement; no countdown or post-match billing. Unpaid towers pause until the next paid interval; no debt. Same-tick bills are processed in placement order. This follows the existing analytical simulator's pause/retry policy. |
-| Tick ordering | Income, due upkeep, movement/Core hits, warning release, Freezer pulses, damaging towers, win/lose. Enemies reaching the Core deal their hit before towers fire; same-tick Freezer assists do not depend on purchase order. |
+| Damage / kills | 0.25 points per actual HP removed; 20 per Runner/Tank/Swarm parent killed; 5 per Tiny killed. No overkill credit. Credit belongs to the tower owner; bounty goes to the shared treasury. Scores remain after sale or owner disconnect. |
+| Spawner / Repair / win | 5 points per actual Core HP removed; Repair actor gets 10 per accepted Repair even for a partial heal; winning match participants get +100 once. Spectators get no bonus. Original participant scores remain eligible after disconnect/slot expiry. Existing end triggers are Core destruction or time expiry; no new forfeit flow was added. |
+| Freezer assist | 2 points immediately per eligible enemy per slow application; no kill required. At most one award per enemy every 2 seconds across all Freezers, and at most 10 points per Freezer in a rolling 1-second window. Simultaneous claims use tower placement order. Limits restrict points, not slow application. Killing the enemy awards no extra assist. Selling a source does not reset the enemy's award timer. |
+| Freezer effect | Every enemy in range receives the pulse. Strongest active slow wins; 50% speed for 2 seconds, refreshed by a pulse once per second. Overlap never produces 25% speed. Sold towers' existing slows finish their remaining duration. |
+| Owner-only selling | Only the original owner can sell after the 1-second lock. No host/other-Defender exception, even if the owner disconnects or expires. Unclaimed towers remain until match end. Refund is 50% of the actual original purchase price into the shared treasury, once per tower ID. |
+| Sell-and-rebuy economics | The transaction itself always loses money: Shooter −25, Cannon −60, Freezer −45. Rebuy pays full price and resets the sell lock/firing/upkeep schedule, but never refunds more or awards points. Passive income and bounties are separate earnings, not profit from selling. Buying a fresh Cannon can fire sooner, but costs 60 net; there is no free cooldown reset. |
+| Upkeep | Default: 1 per tower every 10 seconds from placement. Optional slope is off (0); see the experiment section below. Income arrives before billing. If unpaid, tower stops firing/pulsing and shows gray **PAUSED** on the map plus **paused: can't pay upkeep** with point/owner in the status list and inspector. It retries at its next bill, not immediately upon new income; no debt/partial charge. Successful payment resumes it and adds a spend-feed note. Same-tick bills use placement order. |
+| Core Repair | Any Defender may pay 60 from shared treasury to heal up to 5, never over 100. Full HP rejects without charge or cooldown. Shared cooldown is 20 seconds from acceptance. Simultaneous requests are serialized: one valid action charges/heals/scores once, others fail. |
+| Cannon | Cost 120, range 150, damage 80, 0.5 shots/sec, 45px splash. Primary target is closest to Core in range; splash hits enemies inside the target-centered circle even outside tower range. |
+| Shooter | Cost 50, range 120, damage 12, 2 shots/sec. Closest-to-Core target in range, ties by lower enemy ID. |
+| Tick order | Diagnostic sampling, clock/income, due upkeep, enemy movement/Core hits/proximity splits, warning release, Freezer pulses, damage towers, win/lose. New enemies do not move on their release/split tick. Core destruction on the final tick gives Spawner the win. |
 
-Balance numbers remain provisional. `balance_sim.js` is a separate older analytical model and was not rerun or updated for selling/scoring or this live pulse/tick ordering; it should not be used to certify these mechanics. Use the live-engine tests in `test/tower-rules.test.js` and `test/network.test.js` for this milestone.
+Retest a Freezer at point 13 plus a Shooter at point 12 against one top Runner: Freezer owner gets **2 points / 1 awarded slow assist**, Shooter owner gets **25 points / 20 damage / 1 kill**; if one player owns both, total is **27**. Overlapping Freezers do not duplicate the same enemy's award within two seconds. A Freezer slowing five fresh Tinies can award 10 points immediately, even before any are killed.
 
-## Role messaging fix
-- Active headings now say **Attack the Core** for the Spawner, **Defend the Core** for Defenders, and **Watching the match** for spectators. Previously everyone saw the Defender heading.
-- Spectators receive viewing guidance instead of Defender instructions. Lobby guidance follows host ownership; countdown hints follow the player's role.
-- Runner controls and purchase status appear only for the Spawner. The status no longer says Ready in the lobby, countdown, finished match, while disconnected, or without enough money.
-- Refresh/reconnect shows connection recovery guidance until identity confirmation. Expired rooms and sessions opened elsewhere replace stale action hints and disable controls immediately.
-- Core HP, timer, explicitly labeled Spawner money, Shared Treasury, spend feed, gate warnings, player roster, and server-provided match result are shared information and remain visible to everyone.
-- Milestone 3 adds Defender-only placement controls and role/phase-aware placement hints, including countdown, affordability, pending requests and reconnect. Spawners and spectators never receive a Confirm Placement control.
+Inspect / Sell still names the owner and enforces the lock. Refunds are +25/+60/+45. Refresh must preserve ownership, scores, sell-lock age, upkeep schedule, slow expiry and assist award limits. Automated fixtures force unpaid upkeep and a later paid bill to check the pause/resume transitions exactly; ordinary income can make this situation uncommon in manual play.
 
-To retest, create a room in a normal window and join in incognito. Start the match and compare the headings and hints; refresh each window during play and verify the role-specific text returns. A third window joining mid-match should show Spectator, Watching the match, and no Runner controls. Role selection is still automatic in this milestone; each snapshot updates the UI from the current server-assigned role.
+## Spawner cooldown diagnostics (no tuning)
+Each Spawner enemy button shows its price and **Ready**, **N seconds cooldown**, **Not enough money: need X**, and/or **Enemy cap: needs X slots**. Multiple simultaneous blocks are shown. Buttons and gates remain unavailable outside play or while reconnecting. Selecting an enabled enemy type does not spend; clicking a gate does. Cooldowns are per type across all eight gates, never per gate. Cost, cooldown and capacity reservation start at accepted click, not after the visible two-second typed gate warning.
+
+The Spawner sees running **Affordable cooldown time** for each type, plus **All affordable types blocked**. The server accumulates integer 30-Hz ticks and converts to seconds:
+
+- `perTypeSeconds`: money is enough for that type, capacity can fit it, but its cooldown is not ready. Other types may still be usable.
+- `anyTypeSeconds`: time when at least one type meets that condition; overlapping type intervals count once.
+- `allAffordableSeconds`: at least one type is affordable and every affordable type fits capacity but is on cooldown. This measures total cooldown lockout rather than restriction on one preferred type.
+
+Cap blocks, countdown, lobby and finished time are excluded. These are availability measures, not an inference that the human tried to click; they continue while the Spawner is disconnected. They survive refresh and freeze at match end. No balance value is changed by the measurements.
+
+The Node terminal writes one JSON record per completed match with `event: "spawner-cooldown-summary"`, room code, end reason, winner, fixed Defender count, elapsed match seconds and all three cooldown totals. The same record now includes `economy` with 30-second money samples and both sides' income/spending ledgers. If all reconnect reservations expire before completion, it instead logs an incomplete `endedBy: "room-empty"` record with `winner: null`; exclude it when comparing complete matches. Process crashes/restarts cannot recover unsaved in-memory metrics. Keep the terminal output for playtesting. No tokens or nicknames are logged by this diagnostic.
 
 ## Scope and configuration
-- `shared/config.js` supplies the map dimensions, Core position, ring, all 16 snap points, all 8 gates, reconnect window, game timings, Runner/economy numbers, rates, and rendering dimensions.
-- The server and `balance_sim.js` require it; the browser loads the same file at /shared/config.js.
-- Simulation: 30 fixed ticks/sec. Periodic full snapshots: 15/sec, plus immediate lobby/connection updates. Rendering interpolates with a 100ms buffer, freezing on gaps rather than predicting outcomes.
-- Spawn, placement and sell attempts each have a separate 4/sec/player limit (including rejected attempts); ordinary requests are limited to 10/sec/connection. These player limits survive reconnect.
-- Defenders select one of the 16 fixed points and confirm. The server selects the position from shared config, checks role/phase/occupancy/funds and charges the shared treasury atomically. No position, cost or ownership supplied by a client is trusted.
-- Shooter: cost 50, range 120, damage 12, two shots/sec. It fires on the first eligible tick, then at its configured interval, targeting the closest-to-Core enemy among those in range. Equal distances use the lower enemy ID. Damage is instant; shot lines are visual only. Enemies still ignore towers. Tick order retains movement/Core collisions before tower fire and the match-end check.
-- Shared treasury starts at 150 + 10 per extra Defender (N fixed at start), earns 5/sec during play and receives 6 per Runner kill. Selling refunds the treasury; tower upkeep deducts from it. Personal scores never create personal wallets.
-- The latest eight purchases/sales appear in the shared spend feed; total upkeep rate appears in the HUD and each tower's next bill in its inspector. Nicknames remain textContent in the feed, owner inspector and score list. All live combat, score, sale and upkeep values are in shared/config.js.
-- Money is charged and cooldown starts when the server accepts the click. A warning reserves an enemy slot; pending plus active enemies cannot exceed 80.
-- Health endpoint: /health. Server binds 0.0.0.0 and process.env.PORT.
-- Nicknames are rendered with textContent. Reconnect tokens never appear in shared snapshots.
-- Player markers and move-preview have been removed.
-- `balance_sim_v1.js` was renamed to `balance_sim.js`. Tower-killed Swarms now award the parent's 18 bounty and split; automatic splits still do not pay the parent bounty. The balance grid was not rerun or tuned.
+- Shared config supplies map, Core/ring, 16 snap points, 8 gates, all combat/economy/scoring/repair/cap/timing/rate values and drawing dimensions. Server/browser use the same file. `balance_sim.js` now drives `server/game.js` directly and contains only bot decisions/reporting, with no duplicate combat rules.
+- Fixed 30-Hz server loop, 15-Hz full snapshots, 100ms client interpolation buffer. Clients render results; they never decide damage, money or wins. Movement freezes on snapshot gaps rather than predicting outcomes.
+- Spawn, placement, sell and Repair each have a separate 4/sec/player attempt limit including rejects, surviving reconnect. All enemy types and the legacy Runner action share one spawn bucket. General requests are limited to 10/sec/connection.
+- Placement uses the 16 fixed snap points with no Defender-count scaling cap. First valid request wins a contested point; actions are validated synchronously against shared money/roles/state. Client-supplied prices, damage and ownership are ignored.
+- N is fixed at start. Defender treasury starts at 150 + 10 per extra Defender, earns 5/sec. Spawner starts at 150, earns 4 + 0.5N/sec and +5 per enemy Core hit. No income during countdown or after finish. Scores do not create personal wallets.
+- Latest eight placement/sale/Repair/upkeep-transition entries appear in the shared feed. Upkeep rate is in the HUD; next tower bill is in its inspector. Core HP is rounded up for display. Nicknames use textContent; reconnect secrets never appear in shared snapshots.
+- Stable playerId plus localStorage token preserves a disconnected slot for 120 seconds. Active matches continue, host transfers, new arrivals are spectators, and rooms stay in one server process. /health remains public. No move-preview or player markers.
+
+## Economy experiments and match logs
+
+The only live experiment controls are in `shared/config.js`:
+
+- `upkeep.upkeepSlope: 0` (off). Each tower's bill is `upkeep.cost * (1 + max(0, towerCount - upkeep.scaleAfterTowers) * upkeep.upkeepSlope)`. `scaleAfterTowers` is 8; the existing base bill is 1 every 10 seconds. At slope 0.125, sixteen towers each pay 2 per bill, a team total of 32 per ten seconds. All placed towers count, including paused/disconnected-owner towers. The count is evaluated when each bill is due. Existing billing schedules, pause/retry/no-debt rules and owner-only sales are unchanged.
+- `economy.coreHitReward: 5` already existed and remains 5. The experiment reuses it rather than introducing a second reward value. It is money per enemy that actually hits the Core, independent of the score multiplier for Core damage.
+
+The client upkeep HUD uses the server-provided bill, so it stays correct if you later opt into an experiment. No experimental value is applied to the default playable game by running the simulator.
+
+`node balance_sim.js` runs three separate settings: current, slope 0.125 with reward 5, and reward 10 with slope 0. By default it runs spread Defenders against five Spawner scripts, at N=1/3/7, with 50 paired seeds each: 2,250 matches total. Config is cloned per experiment; live defaults are never mutated. It runs the actual 30-Hz engine, including capacity reservations, Freezer pulses, immediate death checks and correct opposite-gate selection. There is no Surge because the playable engine does not yet have it.
+
+```sh
+node balance_sim.js > reports/economy-comparison.json
+```
+
+The included [comparison report](reports/economy-comparison.md) gives all five-minute and early-ending results. Raw JSON includes every match, seed, cash sample and ledger, plus source hashes. `results[].atFiveMinutes` averages only matches that reached 300 seconds; `results[].earlyEndings` contains their actual earlier end times/balances. Missing groups have count 0 and null means, never fabricated zero balances. A loss exactly at 300 seconds still belongs to the five-minute group. Survivors can differ across settings.
+
+To run a quick subset, use:
+
+```sh
+node balance_sim.js --runs=5 --settings=current --spawners=human-like --ns=1,3,7
+```
+
+Settings names: `current`, `upkeepSlope0125`, `coreHitReward10`. `--defenders=spread,clustered,lazy` enables the original clustering stress test and six-tower strategy. The included report uses spread only. Bots use one team controller and ten decisions/sec, respect action rate limits, purchase before Repair, and do not reproduce human coordination. This is simulated evidence, not local human playtest data.
+
+### Capture and read a local match log
+
+In PowerShell, run the unchanged game while keeping a log:
+
+```powershell
+npm start | Tee-Object -FilePath playtest.log
+```
+
+At match end, find the JSON line whose `event` is `spawner-cooldown-summary`. Normal npm/startup messages are not JSON records. This keeps the earlier event name/cooldown fields and appends `economy`:
+
+| Field | Meaning |
+| --- | --- |
+| `elapsedSeconds`, `endedBy`, `winner`, `defenders` | Actual match duration, completed/incomplete reason, winning role, fixed N. Use `endedBy = match-finished` for completed-match comparisons. `room-empty` means an abandoned match whose reconnect reservations expired. |
+| `economy.settings` | The actual upkeep slope and Core-hit money reward used. |
+| `economy.samples` | `{seconds, treasury, spawnerMoney}` at 0, 30, 60, ... using match time. No countdown income. Samples are taken after the server tick, including its income, upkeep and combat. The history is written at match end, not as a new line every 30 seconds. |
+| `economy.defenders`, `economy.spawner` | Each side's `startingBalance`, categorized `income` and `spent`, `totalIncome`, `totalSpent`, and `finalBalance`. |
+| Defender income | `passive`, `bounties`, `saleRefunds`. Refunds are counted as credited income; purchases remain full spending. |
+| Defender spending | `towers`, actually paid `upkeep`, and accepted `repairs`. Rejections and unpaid bills add no spending/debt. |
+| Spawner income / spending | `passive` and `coreHits`; `enemies` records accepted spawn costs at click time. |
+
+For each side, `startingBalance + totalIncome - totalSpent = finalBalance` within floating-point precision. Starting money is not counted again as income. Scores and winning bonuses are points, not money. The JSON rounds money to eight decimal places; the HUD still displays whole credits.
+
+Read the last record in a second PowerShell window:
+
+```powershell
+$match = Get-Content .\playtest.log | Where-Object { $_.StartsWith('{"event":"spawner-cooldown-summary"') } | Select-Object -Last 1 | ConvertFrom-Json
+$match.economy.samples | Format-Table
+$match.economy.defenders | ConvertTo-Json -Depth 4
+$match.economy.spawner | ConvertTo-Json -Depth 4
+```
+
+A match ending at 64.9 seconds has samples at 0, 30 and 60, plus its true final balances in the side summaries. It has no 90/300-second sample. Do not interpret its final treasury as a five-minute result. Refresh does not reset the ledger. Logs are in memory until emitted; a process crash/redeploy still loses an unfinished match's history. The diagnostic contains no reconnect tokens or nicknames.
 
 ## Hosting notes
 The hosted setup uses a public ChatGPT Sites frontend and one Render Web Service for the game server. Render runs the persistent Node.js/Express process, Socket.IO WebSockets, and authoritative 30 Hz in-memory game loop. Sites serves only static browser assets. Locally, the Node server can still serve both the page and the game from one origin.
@@ -105,7 +173,7 @@ The source is prepared for split deployment. Live publication and signed-out bro
    ```sh
    git init
    git add .
-   git commit -m "Implement Core Defense milestone 4"
+   git commit -m "Implement Core Defense milestone 5"
    git branch -M main
    git remote add origin https://github.com/YOUR_USERNAME/core-defense.git
    git push -u origin main
@@ -151,7 +219,7 @@ Both `package.json` and the root entry in `package-lock.json` declare `engines.n
 1. Wait for Render to show Live. Open the Render HTTPS URL with `/health` appended on both devices; expect `ok`.
 2. On your phone, turn Wi-Fi OFF, leave cellular data ON, and use landscape orientation. Open the actual **Sites** base URL in a private browser session not signed into ChatGPT. It must show the game lobby without a sign-in or permission wall. Enter a nickname and create a room. The phone should be Spawner and host.
 3. On your computer using Wi-Fi or Ethernet, open that same **Sites** base URL in an incognito window not signed into ChatGPT. Enter a different nickname and join with the room code. The computer should be Defender. Both screens should list exactly two players.
-4. Start the match from the phone. Both screens show the 10-second countdown with frozen money/time. During play, the phone says Attack the Core and offers Runner controls; the computer says Defend the Core and has no Runner controls.
+4. Start the match from the phone. Both screens show the 10-second countdown with frozen money/time. During play, the phone says Attack the Core and offers enemy controls (Runner selected); the computer says Defend the Core and has no Runner controls.
 5. On the computer, select the top ring point and confirm a Shooter for 50. Both screens show it and the same spend feed entry. Tap top gate 1 on the phone: expect cost 20, cooldown 1.5 seconds, a 2-second warning, and then a Runner. The Shooter kills it in two hits before the Core, paying 6 into the shared treasury. Then use the unguarded bottom gate to check a Core hit. Small display delays from cellular latency are normal.
 6. While the match is active, refresh the phone's current page, keeping its player-specific URL and browser storage. Within the 120-second reconnect window it should restore the same player ID, nickname, Spawner role and action controls. Money, cooldown, Core HP and time continue; the roster stays at two. Host ownership can transfer to the connected computer and stays there after the phone returns.
 7. Refresh the computer's current page too. It should restore the Defender identity, Defender heading, owned towers, shared treasury and placement controls, with no Runner controls. Avoid refreshing during the countdown for this test: a countdown disconnect deliberately returns the room to the lobby.
@@ -176,12 +244,11 @@ References (checked October 26, 2026):
 - https://docs.netlify.com/build/functions/overview/
 
 ## Verification
-Fresh verification: all 49 automated tests pass, along with Node syntax checks. A clean `npm ci --omit=dev` plus `npm start` smoke test passed using two real Socket.IO clients and the automatic 30 Hz loop: countdown, Freezer/Shooter combat, 35-point combined credit, exact first upkeep bills, reconnect, 45-credit Freezer refund and Cannon placement. No browser layout or phone-touch run was performed here.
 
-Milestone 4 adds deterministic tests for Cannon area damage, strongest-wins slowing/expiry/refresh, assist attribution, owner-only sales/locks, upkeep pause/recovery and score persistence. Network tests use real Socket.IO clients to check separate owners' scores, shared bounties, duplicate sales and refresh-style reconnect. The package and lockfile both use version 0.4.0 with unchanged dependencies and Node engine range.
+Fresh verification: all 82 automated tests pass, including engine ledger accounting, exact 30-second sampling, early endings, optional upkeep, per-hit money versus score, simulator replay parity, opposite gates, paired seeds, unchanged config, network log output and client upkeep labels. Existing combat, capacity, placement, ownership, selling, reconnect and origin tests remain included.
 
-The browser executable could not be downloaded in this environment, so an actual browser layout/touch run remains a manual check. Client tests exercise DOM events and canvas drawing calls through test boundaries; they are not a substitute for the normal/incognito visual test above.
+Replaying the same accepted actions through the previous milestone and this patch with default settings produced identical gameplay snapshots at 30-second boundaries and match end for N=1, 3 and 7. The only new snapshot field is the authoritative per-tower upkeep bill. Across all 2,250 experimental runs, both sides' ledgers reconcile; the raw report retains source hashes.
 
-The earlier placement, fixed-slot, shared-purchase, income, targeting, bounty and role/phase checks remain included, along with Plan B origin/static-asset/reconnect checks. Live Sites/Render publication and signed-out device testing remain pending the actual URLs.
+Package and lockfile use version 0.5.1 with unchanged dependencies and Node engine range. No deployment or milestone 6 work was done. No live default was tuned.
 
-`npm test` covers countdown/income boundaries, all eight approach paths, exact warning/cooldown timing, Core collisions, role/cost/cap validation, fixed N, timer/Core tie ordering, two-client state agreement, authenticated reconnect, host transfer, spectator joining, rate limits, reconnect expiry and snapshot cadence. Client regression tests execute the shipped client against test DOM/transport boundaries to check role/phase changes, controls, refresh/reconnect ordering and expired/moved sessions. These checks do not verify browser layout; use the manual window tests above for visual confirmation.
+Browser layout/touch testing was not performed here; the one-line upkeep HUD change is covered by client regression tests. The normal/incognito and existing phone workflow remain the manual checks. Live Sites/Render publication remains pending deployment.

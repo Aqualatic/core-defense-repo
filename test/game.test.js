@@ -53,7 +53,7 @@ test('N is captured at start; disconnected roster changes do not change income',
 });
 test('Core destruction wins on the deadline; finished matches are frozen', () => {
   const g = playing(); g.matchTick = 8999; g.coreHP = 3;
-  g.enemies.push({ id: 1, x: 600, y: 399 }); G.step(g);
+  g.enemies.push({ id: 1, type: 'Runner', hp: 20, x: 600, y: 399 }); G.step(g);
   assert.equal(g.phase, 'finished'); assert.match(g.reason, /Spawner/);
   const money = g.money; advance(g, 300); assert.equal(g.money, money); assert.equal(g.matchTick, 9000);
   const survivor = playing(); advance(survivor, 9000); assert.match(survivor.reason, /Defenders/);
